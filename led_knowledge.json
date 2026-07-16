@@ -1,0 +1,11 @@
+[
+  {
+    "source": "nvdia _DGXH100:H200_service_manual.pdf",
+    "condition": {
+      "color": "unknown",
+      "blinking": false
+    },
+    "description": "no rule extracted",
+    "confidence": 0.0
+  }
+]

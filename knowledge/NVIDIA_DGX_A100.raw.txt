@@ -1,0 +1,6 @@
+[high][第15页][Power Button][green/blink] ‣ Green flashing (1 Hz): Standby (BMC
+[high][第15页][Power Button][green/blink] ‣ Green flashing (4 Hz): POST in progress
+[high][第15页][Power Button][green/solid] ‣ Green solid On: Power On
+[low][第15页][ID Button][blue/unknown] ID Button Press to cause the button blue LED to turn On
+[low][第16页][Fault LED][yellow/unknown] Fault LED Amber On: System or component faulted
+[high][第73页][Chassis ID LED][off/solid] behavior: Off, Solid On, Blinking On (select from

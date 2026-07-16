@@ -1,0 +1,11 @@
+[high][第1页][1        UID button/LED +][blue/solid][OCR] Solid blue = Activated
+[high][第1页][1        UID button/LED +][blue/blink][OCR] Flashing blue:
+[high][第1页][and system power LED][green/solid][OCR] Solid green = System on
+[high][第1页][and system power LED][green/blink][OCR] Flashing green = Performing power on sequence
+[high][第1页][and system power LED][yellow/solid][OCR] Solid amber = System in standby
+[high][第1页][3        Health LED 1][green/solid][OCR] Solid green = Normal
+[high][第1页][3        Health LED 1][green/blink][OCR] Flashing green = iLO is rebooting.
+[high][第1页][3        Health LED 1][yellow/blink][OCR] Flashing amber = System degraded
+[high][第1页][3        Health LED 1][red/blink][OCR] Flashing red = System critical 3
+[high][第1页][4      NIC status LED 1][green/solid][OCR] Solid green = Link to network
+[high][第1页][4      NIC status LED 1][green/blink][OCR] Flashing green = Network active

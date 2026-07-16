@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Rack LED Simulator</title>
+
+<style>
+
+body{
+    font-family:Arial,sans-serif;
+    background:#f5f5f5;
+    text-align:center;
+}
+
+.container{
+    margin-top:30px;
+}
+
+.rack{
+    width:420px;
+    margin:auto;
+    background:#222;
+    color:white;
+    border-radius:10px;
+    padding:20px;
+}
+
+.server{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+
+    background:#333;
+    border-radius:8px;
+
+    padding:12px 15px;
+    margin:12px 0;
+}
+
+.left{
+    display:flex;
+    align-items:center;
+    gap:15px;
+}
+
+.led{
+    width:24px;
+    height:24px;
+    border-radius:50%;
+    background:#444;
+}
+
+select{
+    font-size:14px;
+    padding:4px;
+}
+
+.blink{
+    animation:blink 1s infinite;
+}
+
+.fastblink{
+    animation:blink .3s infinite;
+}
+
+@keyframes blink{
+    50%{
+        opacity:0.15;
+    }
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>Rack A01 Simulator</h1>
+
+<div class="rack">
+
+<h2>Rack A01</h2>
+
+<div class="server">
+
+<div class="left">
+
+<span>Server U42</span>
+
+<div id="led0" class="led"></div>
+
+</div>
+
+<select onchange="updateLED(0,this.value)">
+
+<option value="green">Green Solid</option>
+
+<option value="red-solid">Red Solid</option>
+
+<option value="red-blink">Red Blink</option>
+
+<option value="yellow-blink">Yellow Blink</option>
+
+<option value="off">Off</option>
+
+</select>
+
+</div>
+
+
+
+<div class="server">
+
+<div class="left">
+
+<span>Server U41</span>
+
+<div id="led1" class="led"></div>
+
+</div>
+
+<select onchange="updateLED(1,this.value)">
+
+<option value="green">Green Solid</option>
+
+<option value="red-solid">Red Solid</option>
+
+<option value="red-blink">Red Blink</option>
+
+<option value="yellow-blink">Yellow Blink</option>
+
+<option value="off">Off</option>
+
+</select>
+
+</div>
+
+
+
+<div class="server">
+
+<div class="left">
+
+<span>Server U40</span>
+
+<div id="led2" class="led"></div>
+
+</div>
+
+<select onchange="updateLED(2,this.value)">
+
+<option value="green">Green Solid</option>
+
+<option value="red-solid">Red Solid</option>
+
+<option value="red-blink">Red Blink</option>
+
+<option value="yellow-blink">Yellow Blink</option>
+
+<option value="off">Off</option>
+
+</select>
+
+</div>
+
+
+
+<div class="server">
+
+<div class="left">
+
+<span>Server U39</span>
+
+<div id="led3" class="led"></div>
+
+</div>
+
+<select onchange="updateLED(3,this.value)">
+
+<option value="green">Green Solid</option>
+
+<option value="red-solid">Red Solid</option>
+
+<option value="red-blink">Red Blink</option>
+
+<option value="yellow-blink">Yellow Blink</option>
+
+<option value="off">Off</option>
+
+</select>
+
+</div>
+
+</div>
+
+</div>
+
+<script>
+
+function updateLED(index,status){
+
+    let led=document.getElementById("led"+index);
+
+    led.className="led";
+
+    switch(status){
+
+        case "green":
+            led.style.background="lime";
+            break;
+
+        case "red-solid":
+            led.style.background="red";
+            break;
+
+        case "red-blink":
+            led.style.background="red";
+            led.classList.add("blink");
+            break;
+
+        case "yellow-blink":
+            led.style.background="orange";
+            led.classList.add("blink");
+            break;
+
+        case "off":
+            led.style.background="#111";
+            break;
+    }
+
+}
+
+for(let i=0;i<4;i++)
+    updateLED(i,"green");
+
+</script>
+
+</body>
+</html>

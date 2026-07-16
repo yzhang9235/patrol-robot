@@ -1,6 +1,0 @@
-{
-  "A01": {"position": 0,   "unit": "cm", "notes": "过道起点"},
-  "A02": {"position": 120, "unit": "cm", "notes": ""},
-  "A03": {"position": 240, "unit": "cm", "notes": ""},
-  "A04": {"position": 360, "unit": "cm", "notes": ""}
-}

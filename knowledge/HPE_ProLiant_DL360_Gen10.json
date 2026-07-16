@@ -1,0 +1,130 @@
+{
+  "vendor": "HPE",
+  "model": "ProLiant DL360 Gen10",
+  "source_file": "HPE.png",
+  "extracted_at": "2026-07-16T11:03:30.508048",
+  "rule_count": 11,
+  "rules": [
+    {
+      "id": "r1",
+      "component": " UID button/LED +",
+      "color": "blue",
+      "pattern": "solid",
+      "description": "Solid blue = Activated",
+      "page": 1,
+      "source": "HPE.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r2",
+      "component": "UID button/LED +",
+      "color": "blue",
+      "pattern": "blink",
+      "description": "Flashing blue:",
+      "page": 1,
+      "source": "HPE.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r3",
+      "component": "power LED",
+      "color": "green",
+      "pattern": "solid",
+      "description": "Solid green = System on",
+      "page": 1,
+      "source": "HPE.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r4",
+      "component": "system power LED",
+      "color": "green",
+      "pattern": "blink",
+      "description": "Flashing green = Performing power on sequence",
+      "page": 1,
+      "source": "HPE.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r5",
+      "component": "system power LED",
+      "color": "yellow",
+      "pattern": "solid",
+      "description": "Solid amber = System in standby",
+      "page": 1,
+      "source": "HPE.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r6",
+      "component": "Health LED 1",
+      "color": "green",
+      "pattern": "solid",
+      "description": "Solid green = Normal",
+      "page": 1,
+      "source": "HPE.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r7",
+      "component": "Health LED 1",
+      "color": "green",
+      "pattern": "blink",
+      "description": "Flashing green = iLO is rebooting.",
+      "page": 1,
+      "source": "HPE.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r8",
+      "component": "Health LED 1",
+      "color": "yellow",
+      "pattern": "blink",
+      "description": "Flashing amber = System degraded",
+      "page": 1,
+      "source": "HPE.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r9",
+      "component": "Health LED 1",
+      "color": "red",
+      "pattern": "blink",
+      "description": "Flashing red = System critical 3",
+      "page": 1,
+      "source": "HPE.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r10",
+      "component": "NIC status LED 1",
+      "color": "green",
+      "pattern": "solid",
+      "description": "Solid green = Link to network",
+      "page": 1,
+      "source": "HPE.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r11",
+      "component": "NIC status LED 1",
+      "color": "green",
+      "pattern": "blink",
+      "description": "Flashing green = Network active",
+      "page": 1,
+      "source": "HPE.png",
+      "confidence": "high",
+      "ocr": true
+    }
+  ]
+}

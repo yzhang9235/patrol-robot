@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Rack LED Simulator</title>
+
+<style>
+
+* {
+    box-sizing: border-box;
+}
+
+html, body{
+    margin:0;
+    padding:0;
+    width:100%;
+    height:100%;
+    overflow:hidden;
+    background:#f5f5f5;
+    font-family:Arial,sans-serif;
+    text-align:center;
+}
+
+/* 核心：把内容整体顺时针旋转90度，铺满屏幕。
+   手机保持竖着拿/固定不动，画面看起来就是横屏效果。
+   如果你想要逆时针旋转（往左倒），把 rotate(90deg) 改成 rotate(-90deg)，
+   同时把 translateY(-100%) 改成 translateX(-100%) */
+.rotate-wrapper{
+    position:fixed;
+    top:0;
+    left:0;
+    width:100vh;
+    height:100vw;
+    transform-origin: top left;
+    transform: rotate(90deg) translateY(-100%);
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    padding:20px 10px;
+}
+
+h1{
+    font-size:18px;
+    margin:0 0 16px 0;
+}
+
+.rack{
+    display:flex;
+    flex-direction:row;
+    justify-content:center;
+    align-items:stretch;
+    gap:10px;
+    background:#222;
+    color:white;
+    border-radius:10px;
+    padding:20px 12px;
+    overflow-x:auto;
+}
+
+.server{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:space-between;
+    gap:14px;
+
+    background:#333;
+    border-radius:8px;
+
+    padding:16px 10px;
+    min-width:80px;
+    flex:1 0 auto;
+}
+
+.server span{
+    font-size:13px;
+    white-space:nowrap;
+}
+
+.led{
+    width:36px;
+    height:36px;
+    border-radius:50%;
+    background:#444;
+}
+
+.status-label{
+    font-size:11px;
+    color:#aaa;
+    min-height:14px;
+}
+
+.blink{
+    animation:blink 1s infinite;
+}
+
+@keyframes blink{
+    50%{
+        opacity:0.15;
+    }
+}
+
+.controls{
+    margin-top:16px;
+    font-size:13px;
+    color:#555;
+}
+
+.controls button{
+    font-size:14px;
+    padding:8px 16px;
+    border-radius:6px;
+    border:1px solid #999;
+    background:white;
+    margin:0 4px;
+}
+
+.step-label{
+    margin-top:8px;
+    font-size:12px;
+    color:#888;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="rotate-wrapper">
+
+<h1>Rack A01 Simulator</h1>
+
+<div class="rack" id="rack">
+
+<div class="server">
+<span>U42</span>
+<div id="led0" class="led"></div>
+<div class="status-label" id="label0"></div>
+</div>
+
+<div class="server">
+<span>U41</span>
+<div id="led1" class="led"></div>
+<div class="status-label" id="label1"></div>
+</div>
+
+<div class="server">
+<span>U40</span>
+<div id="led2" class="led"></div>
+<div class="status-label" id="label2"></div>
+</div>
+
+<div class="server">
+<span>U39</span>
+<div id="led3" class="led"></div>
+<div class="status-label" id="label3"></div>
+</div>
+
+</div>
+
+<div class="controls">
+    每10秒切换一步，控制变量：每步只变一个LED，其他保持绿色
+    <br>
+    <button onclick="paused = !paused; this.textContent = paused ? '继续' : '暂停';">暂停</button>
+    <button onclick="nextStep()">立即切换</button>
+</div>
+
+<div class="step-label" id="stepLabel"></div>
+
+</div>
+
+<script>
+
+// 固定测试序列，控制变量：每一步只有一个LED偏离绿色，其他三个都是绿色。
+// 播完最后一步(第一个变闪烁红)后自动从头循环，方便反复测试。
+const SCRIPT_STEPS = [
+    { desc: "全部绿色(基线)",         states: ["green",       "green", "green", "green"] },
+    { desc: "第一个: 闪烁绿",         states: ["green-blink", "green", "green", "green"] },
+    { desc: "第二个: 常亮琥珀色(黄)", states: ["green", "yellow-solid", "green", "green"] },
+    { desc: "第三个: 闪烁琥珀色(黄)", states: ["green", "green", "yellow-blink", "green"] },
+    { desc: "第四个: 蓝色",           states: ["green", "green", "green", "blue-solid"] },
+    { desc: "第一个: 闪烁红",         states: ["red-blink", "green", "green", "green"] },
+];
+const STEP_INTERVAL_MS = 10000;
+
+const LED_COUNT = 4;
+let paused = false;
+let stepIndex = 0;
+let lastStepTime = Date.now();
+
+function updateLED(index, status){
+    let led = document.getElementById("led" + index);
+    let label = document.getElementById("label" + index);
+    led.className = "led";
+
+    switch(status){
+        case "green":
+            led.style.background = "lime";
+            break;
+
+        case "green-blink":
+            led.style.background = "lime";
+            led.classList.add("blink");
+            break;
+
+        case "yellow-solid":
+            led.style.background = "orange";
+            break;
+
+        case "yellow-blink":
+            led.style.background = "orange";
+            led.classList.add("blink");
+            break;
+
+        case "blue-solid":
+            led.style.background = "dodgerblue";
+            break;
+
+        case "red-solid":
+            led.style.background = "red";
+            break;
+
+        case "red-blink":
+            led.style.background = "red";
+            led.classList.add("blink");
+            break;
+
+        case "off":
+            led.style.background = "#111";
+            break;
+    }
+
+    label.textContent = status;
+}
+
+function applyStep(index){
+    const step = SCRIPT_STEPS[index];
+    for (let i = 0; i < LED_COUNT; i++){
+        updateLED(i, step.states[i]);
+    }
+    document.getElementById("stepLabel").textContent =
+        `[${index + 1}/${SCRIPT_STEPS.length}] ${step.desc}`;
+}
+
+function nextStep(){
+    stepIndex = (stepIndex + 1) % SCRIPT_STEPS.length;
+    applyStep(stepIndex);
+    lastStepTime = Date.now();
+}
+
+// 初始状态：第一步(全绿)
+applyStep(0);
+lastStepTime = Date.now();
+
+// 每250ms检查一次"距离上次切换过去了多久"，用真实时间戳(Date.now())判断，
+// 而不是靠setInterval自己触发了几次——手机锁屏/切后台再回来时，
+// setInterval经常会连续"追赶"触发好几次，如果直接在回调里nextStep()，
+// 就会出现明明没到10秒就连跳好几步的情况。用时间戳判断可以避免这个问题：
+// 就算这次检查函数被连续调用好几次，只要没真正过10秒，就不会重复切换。
+setInterval(() => {
+    if (paused) {
+        return;
+    }
+    const now = Date.now();
+    if (now - lastStepTime >= STEP_INTERVAL_MS) {
+        nextStep();
+    }
+}, 250);
+
+</script>
+
+</body>
+</html>

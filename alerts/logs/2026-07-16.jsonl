@@ -1,0 +1,11 @@
+{"timestamp": "2026-07-16T14:36:42.224235", "color": "yellow", "pattern": "unknown", "video_file": "alerts/videos/alert_20260716_143635.mp4", "explanation": "[Fault LED] Fault LED Amber On: System or component faulted"}
+{"timestamp": "2026-07-16T14:36:56.807692", "color": "yellow", "pattern": "blink", "video_file": "alerts/videos/alert_20260716_143650.mp4", "explanation": "[Fault LED] Fault LED Amber On: System or component faulted"}
+{"timestamp": "2026-07-16T14:37:03.921605", "color": "yellow", "pattern": "solid", "video_file": "alerts/videos/alert_20260716_143657.mp4", "explanation": "[Fault LED] Fault LED Amber On: System or component faulted"}
+{"timestamp": "2026-07-16T14:37:11.348321", "color": "yellow", "pattern": "blink", "video_file": "alerts/videos/alert_20260716_143704.mp4", "explanation": "[Fault LED] Fault LED Amber On: System or component faulted"}
+{"timestamp": "2026-07-16T14:37:26.557979", "color": "yellow", "pattern": "blink", "video_file": "alerts/videos/alert_20260716_143719.mp4", "explanation": "[Fault LED] Fault LED Amber On: System or component faulted"}
+{"timestamp": "2026-07-16T14:37:33.508855", "color": "red", "pattern": "blink", "video_file": "alerts/videos/alert_20260716_143726.mp4", "explanation": "检测到red色异常，但NVIDIA DGX A100暂无对应的说明书规则记录，需要人工判断"}
+{"timestamp": "2026-07-16T14:37:41.865933", "color": "yellow", "pattern": "blink", "video_file": "alerts/videos/alert_20260716_143735.mp4", "explanation": "[Fault LED] Fault LED Amber On: System or component faulted"}
+{"timestamp": "2026-07-16T14:58:37.435348", "color": "yellow", "pattern": "unknown", "video_file": "alerts/videos/alert_20260716_145830.mp4", "explanation": "[Fault LED] Fault LED Amber On: System or component faulted"}
+{"timestamp": "2026-07-16T14:58:44.291865", "color": "yellow", "pattern": "solid", "video_file": "alerts/videos/alert_20260716_145837.mp4", "explanation": "[Fault LED] Fault LED Amber On: System or component faulted"}
+{"timestamp": "2026-07-16T14:58:51.116241", "color": "yellow", "pattern": "blink", "video_file": "alerts/videos/alert_20260716_145844.mp4", "explanation": "[Fault LED] Fault LED Amber On: System or component faulted"}
+{"timestamp": "2026-07-16T14:59:08.366835", "color": "red", "pattern": "unknown", "video_file": "alerts/videos/alert_20260716_145901.mp4", "explanation": "检测到red色异常，但NVIDIA DGX A100暂无对应的说明书规则记录，需要人工判断"}

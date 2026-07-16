@@ -1,0 +1,69 @@
+{
+  "vendor": "NVIDIA",
+  "model": "DGX A100",
+  "source_file": "dgxa100-user-guide.pdf",
+  "extracted_at": "2026-07-15T16:27:06.289198",
+  "rule_count": 6,
+  "rules": [
+    {
+      "id": "r1",
+      "component": "Power Button",
+      "color": "green",
+      "pattern": "blink",
+      "description": "‣ Green flashing (1 Hz): Standby (BMC",
+      "page": 15,
+      "source": "dgxa100-user-guide.pdf",
+      "confidence": "high"
+    },
+    {
+      "id": "r2",
+      "component": "Power Button",
+      "color": "green",
+      "pattern": "blink",
+      "description": "‣ Green flashing (4 Hz): POST in progress",
+      "page": 15,
+      "source": "dgxa100-user-guide.pdf",
+      "confidence": "high"
+    },
+    {
+      "id": "r3",
+      "component": "Power Button",
+      "color": "green",
+      "pattern": "solid",
+      "description": "‣ Green solid On: Power On",
+      "page": 15,
+      "source": "dgxa100-user-guide.pdf",
+      "confidence": "high"
+    },
+    {
+      "id": "r4",
+      "component": "ID Button",
+      "color": "blue",
+      "pattern": "unknown",
+      "description": "正在维修",
+      "page": 15,
+      "source": "dgxa100-user-guide.pdf",
+      "confidence": "high"
+    },
+    {
+      "id": "r5",
+      "component": "Fault LED",
+      "color": "yellow",
+      "pattern": "unknown",
+      "description": "Fault LED Amber On: System or component faulted",
+      "page": 16,
+      "source": "dgxa100-user-guide.pdf",
+      "confidence": "low"
+    },
+    {
+      "id": "r6",
+      "component": "Chassis ID LED",
+      "color": "off",
+      "pattern": "solid",
+      "description": "behavior: Off, Solid On, Blinking On (select from",
+      "page": 73,
+      "source": "dgxa100-user-guide.pdf",
+      "confidence": "high"
+    }
+  ]
+}
