@@ -1,0 +1,7 @@
+{
+  "default": {
+    "vendor": "HPE",
+    "model": "ProLiant DL360 Gen10"
+  },
+  "stations": {}
+}

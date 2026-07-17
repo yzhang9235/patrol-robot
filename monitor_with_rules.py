@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """
 patrol_monitor.py
-全自动巡检LED监控：巡检条移动过程中持续识别LED颜色
+全自动巡检LED监控:巡检条移动过程中持续识别LED颜色
     - 遇到 红/黄 -> 发送"停止"指令给巡检条，开始录像，记录报警日志
     - 遇到 绿色 (或没检测到异常色) -> 发送"继续"指令，巡检条前进检查下一台
 
 全程无需人工操作，脚本本身就是一个持续运行的服务（可用 systemd / supervisor 之类常驻）。
+【!】如果server出现了变化需要改变config: python monitor_with_rules.py --configure
 
-【重要】巡检条控制目前用的是"网络请求"占位实现（HTTP POST），
+【重要】巡检条控制目前用的是"网络请求"占位实现(HTTP POST),
 具体协议还没定下来，等你确定巡检条那边暴露的接口(HTTP/MQTT/串口)后，
 只需要改 send_stop_command() / send_resume_command() 这两个函数内部的实现，
 外面的状态机逻辑完全不用动。
@@ -31,6 +32,7 @@ from collections import deque
 from datetime import datetime
 
 from led_knowledge_lookup import LedKnowledgeBase
+from config_manager import get_runtime_config
 
 # ============ CONFIG ============
 RAIL_STOP_URL = "http://<rail-controller-ip>/api/stop"      # TODO: 换成真实地址
@@ -105,11 +107,12 @@ ALERT_COLORS_OVERRIDE = {"red", "yellow"}   # 手动指定：红色和琥珀色(
 # 这里指定默认厂商型号；如果巡检条路径上不同server是不同厂商/型号，
 # 在 STATION_VENDOR_MODEL 里按 station_id 覆盖，不用改代码逻辑，加一行配置就行
 KNOWLEDGE_DIR = "knowledge"
-DEFAULT_VENDOR = "NVIDIA"
-DEFAULT_MODEL = "DGX A100"
-STATION_VENDOR_MODEL = {
-    # "U42": ("Dell", "PowerEdge R760"),   # 举例：这个station是别的厂商/型号
-}
+CONFIG_FILE = Path("config/runtime_config.json")
+# DEFAULT_VENDOR = "NVIDIA"
+# DEFAULT_MODEL = "DGX A100"
+# STATION_VENDOR_MODEL = {
+#     # "U42": ("Dell", "PowerEdge R760"),   # 举例：这个station是别的厂商/型号
+# }
 # =================================
 
 logging.basicConfig(
@@ -117,7 +120,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s\n",
 )
 logger = logging.getLogger("patrol_monitor")
-
 
 def ensure_dirs():
     for d in (ALERT_LOG_DIR, ALERT_VIDEO_DIR, OBSERVATION_LOG_DIR):
@@ -363,10 +365,31 @@ def write_alert_log(color_label, pattern, video_path, explanation):
 
 
 def main():
+    global DEFAULT_VENDOR
+    global DEFAULT_MODEL
+    global STATION_VENDOR_MODEL
+
     ensure_dirs()
-    knowledge_base = LedKnowledgeBase(knowledge_dir=KNOWLEDGE_DIR)
+
+    knowledge_base = LedKnowledgeBase(
+        knowledge_dir=KNOWLEDGE_DIR
+    )
+
+    # 一句话获取配置
+    config = get_runtime_config()
+
+    DEFAULT_VENDOR = config["default"]["vendor"]
+    DEFAULT_MODEL = config["default"]["model"]
+
+    STATION_VENDOR_MODEL = {
+        station: (vm["vendor"], vm["model"])
+        for station, vm in config["stations"].items()
+    }
+
     alert_colors = resolve_alert_colors(knowledge_base)
     cap = cv2.VideoCapture(CAMERA_INDEX)
+
+
     if not cap.isOpened():
         logger.error("无法打开摄像头，退出")
         return
