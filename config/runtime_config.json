@@ -1,7 +1,7 @@
 {
   "default": {
-    "vendor": "HPE",
-    "model": "ProLiant DL360 Gen10"
+    "vendor": "NVIDIA",
+    "model": "DGX A100"
   },
   "stations": {}
 }

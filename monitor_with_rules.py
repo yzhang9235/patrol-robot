@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 patrol_monitor.py
-全自动巡检LED监控:巡检条移动过程中持续识别LED颜色
+全自动巡检LED监控：巡检条移动过程中持续识别LED颜色
     - 遇到 红/黄 -> 发送"停止"指令给巡检条，开始录像，记录报警日志
     - 遇到 绿色 (或没检测到异常色) -> 发送"继续"指令，巡检条前进检查下一台
 
 全程无需人工操作，脚本本身就是一个持续运行的服务（可用 systemd / supervisor 之类常驻）。
-【!】如果server出现了变化需要改变config: python monitor_with_rules.py --configure
 
-【重要】巡检条控制目前用的是"网络请求"占位实现(HTTP POST),
+【重要】巡检条控制目前用的是"网络请求"占位实现（HTTP POST），
 具体协议还没定下来，等你确定巡检条那边暴露的接口(HTTP/MQTT/串口)后，
 只需要改 send_stop_command() / send_resume_command() 这两个函数内部的实现，
 外面的状态机逻辑完全不用动。
@@ -39,15 +38,28 @@ RAIL_STOP_URL = "http://<rail-controller-ip>/api/stop"      # TODO: 换成真实
 RAIL_RESUME_URL = "http://<rail-controller-ip>/api/resume"  # TODO: 换成真实地址
 RAIL_REQUEST_TIMEOUT = 2.0   # 秒，网络请求超时时间，避免卡住主循环
 
-CAMERA_INDEX = 0
+CAMERA_SOURCE = "rtsp://admin:jiandandian@1@192.168.1.129:554/stream1"
+# 本地USB摄像头填数字(0/1/2...)；网络摄像头(巡检条自带的那种)填RTSP地址字符串，
+# 格式一般是: "rtsp://用户名:密码@摄像头IP:554/路径"
+# 具体路径每个厂商不一样，先用VLC的"打开网络串流"功能试出正确地址，
+# 确认能播放画面之后，把同一个地址填在这里，例如:
+# CAMERA_SOURCE = "rtsp://admin:12345@192.168.1.100:554/stream1"
 SHOW_WINDOW = True           # 生产环境建议 False（无人值守，不需要显示画面）；调试时改 True
 
 ALERT_LOG_DIR = Path("alerts/logs")
 ALERT_VIDEO_DIR = Path("alerts/videos")
 OBSERVATION_LOG_DIR = Path("alerts/observations")   # 非报警颜色(绿色、蓝色等)的轻量级记录，只写日志不录像
+
+# ---------- 旧文件自动清理 ----------
+# 视频文件占空间最大，长期无人值守跑下去迟早把硬盘写满，加个按天数清理的机制。
+# 日志是纯文本，占用很小，不清理问题也不大，这里只清理视频；
+# 如果想连日志一起清，把 ALERT_LOG_DIR / OBSERVATION_LOG_DIR 也加进
+# cleanup_old_files 的调用列表里就行
+RETENTION_DAYS = 30              # 超过这么多天的旧录像会被自动删除
+CLEANUP_CHECK_INTERVAL_SECONDS = 3600   # 每隔多久检查一次要不要清理(不用每帧都扫一遍目录)
 OBSERVATION_LOG_MIN_INTERVAL = 30.0   # 同一个颜色至少间隔这么多秒才重复记一次，避免刷屏
 
-CONSECUTIVE_FRAMES_TO_CONFIRM = 5     # 连续5帧都检测到红/黄，才判定为真实报警（约0.15秒@30fps）
+CONSECUTIVE_FRAMES_TO_CONFIRM = 2    # 连续5帧都检测到红/黄，才判定为真实报警（约0.15秒@30fps）
 RECORD_SECONDS_AFTER_TRIGGER = 6.5    # 触发确认后，继续录多少秒才停止录像、恢复巡检
 PRE_TRIGGER_BUFFER_SECONDS = 2.0      # 报警前缓冲：把触发前2秒的画面也存进视频，方便看清"怎么变的"
 # 两者相加 = 8.5秒，比模拟器10秒的切换周期留了约1.5秒安全余量
@@ -67,17 +79,24 @@ BLINK_MIN_RATIO_TO_COUNT = 0.15  # 出现比例低于这个值，说明太偶尔
 # 只在这个区域内找LED，区域外的一律忽略(手、背景反光、走廊灯光都不会被扫到)
 # 设成 None 表示扫全画面(不建议正式使用)；建议按巡检条实际工作距离下，
 # LED出现的画面位置实测填一个 (x1, y1, x2, y2) 矩形，留一点余量防止对位误差
-SCAN_ROI = None   # 例如: (200, 150, 1000, 500)
+SCAN_ROI = (2100, 650, 2450, 850)  # 例如: (200, 150, 1000, 500)
 
 # 标定模式：True时不做面积过滤，把每个候选框的实测面积打印在框旁边，
 # 用来在实际工作距离下读出真实的面积数值，标定完 MIN_AREA/MAX_AREA 后改回 False
 DEBUG_SHOW_AREA = False
 
+# 调试模式：True时把每个候选框的中位数H(色相)/S(饱和度)值显示在框旁边，
+# 而且不做颜色分类过滤(哪怕最终判定不出是哪个颜色也照样显示数值)。
+# 用来对比"真实LED"和"背景反光/金属高光"的H/S数值到底差多少，
+# 从而精确收紧 BLUE_HUE_RANGE / MIN_SATURATION_FOR_COLOR 这些阈值，
+# 而不是凭感觉调。标定完记得改回 False。
+DEBUG_SHOW_HSV = True
+
 # ---------- 亮度/形状参数 ----------
 # 下面这些面积参数要按巡检条"实际工作距离"下实测的LED像素大小来调，
 # 不要用近距离测试的结果(比如拿手机怼近镜头拍)，那样得出的MAX_AREA会偏小，
 # 导致真实工作距离下太大或太小都被误判成反光/白墙滤掉
-BRIGHT_THRESHOLD = 200
+BRIGHT_THRESHOLD = 254
 MIN_AREA = 15
 MAX_AREA = 200000   # 大幅放宽：反光过滤已经交给饱和度判断(classify_color)负责，
                      # 这里的面积上限只用来防止"整片画面都过曝"这种极端情况，
@@ -87,32 +106,27 @@ MIN_CIRCULARITY = 0.3
 PADDING = 4
 
 # ---------- 颜色分类参数 ----------
-MIN_SATURATION_FOR_COLOR = 60
+MIN_SATURATION_FOR_COLOR = 200
 COLOR_PIXEL_MIN_RATIO = 0.15
-RED_HUE_RANGES = [(0, 8), (172, 179)]
-YELLOW_HUE_RANGE = (15, 35)   # 黄色/琥珀色(amber)用同一个区间，说明书里的amber按yellow处理
-GREEN_HUE_RANGE = (40, 85)
-BLUE_HUE_RANGE = (100, 130)
+ALERT_HUE_RANGE = (0, 18)
+GREEN_HUE_RANGE = (58, 70)
+BLUE_HUE_RANGE = (95, 130)
 OK_COLORS = {"green"}
+
 
 # ALERT_COLORS 不再是写死的全局常量：不同厂商说明书里同一个颜色的含义可能完全
 # 不一样(比如这次NVIDIA的蓝色是ID识别灯，属于正常操作，不该触发报警)，所以
 # "哪些颜色算异常"改成程序启动时根据当前厂商的knowledge文件自动推导，
 # 推导逻辑见下面的 suggest_alert_colors()。如果自动推导的结果不对，
 # 可以用 ALERT_COLORS_OVERRIDE 手动覆盖(填了就完全以这个为准，不再看推导结果)。
-ALERT_COLORS_OVERRIDE = {"red", "yellow"}   # 手动指定：红色和琥珀色(amber，内部归到yellow这个桶)都触发报警
+ALERT_COLORS_OVERRIDE = {"amber"}   # 手动指定：红色和琥珀色(amber，内部归到yellow这个桶)都触发报警
 
 # ---------- LED含义知识库(Vendor Manual Parser生成的knowledge schema) ----------
 # 用 build_led_knowledge.py 解析说明书生成 knowledge/<vendor>_<model>.json 后，
 # 这里指定默认厂商型号；如果巡检条路径上不同server是不同厂商/型号，
 # 在 STATION_VENDOR_MODEL 里按 station_id 覆盖，不用改代码逻辑，加一行配置就行
 KNOWLEDGE_DIR = "knowledge"
-CONFIG_FILE = Path("config/runtime_config.json")
-# DEFAULT_VENDOR = "NVIDIA"
-# DEFAULT_MODEL = "DGX A100"
-# STATION_VENDOR_MODEL = {
-#     # "U42": ("Dell", "PowerEdge R760"),   # 举例：这个station是别的厂商/型号
-# }
+runtime_config = None
 # =================================
 
 logging.basicConfig(
@@ -121,9 +135,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger("patrol_monitor")
 
+
 def ensure_dirs():
     for d in (ALERT_LOG_DIR, ALERT_VIDEO_DIR, OBSERVATION_LOG_DIR):
         d.mkdir(parents=True, exist_ok=True)
+
+
+def cleanup_old_videos():
+    """删掉超过 RETENTION_DAYS 天的旧录像文件，避免长期无人值守跑到把硬盘写满。
+    只删视频，不动日志(日志是文本，占用小，而且是排查问题的历史记录，更值得留久一点)。
+    """
+    cutoff = time.time() - RETENTION_DAYS * 86400
+    deleted_count = 0
+    deleted_bytes = 0
+    for video_file in ALERT_VIDEO_DIR.glob("*.mp4"):
+        try:
+            mtime = video_file.stat().st_mtime
+            if mtime < cutoff:
+                size = video_file.stat().st_size
+                video_file.unlink()
+                deleted_count += 1
+                deleted_bytes += size
+        except OSError as e:
+            logger.error(f"清理旧录像失败: {video_file} -> {e}")
+
+    if deleted_count:
+        logger.warning(
+            f"清理了 {deleted_count} 个超过{RETENTION_DAYS}天的旧录像，"
+            f"释放约 {deleted_bytes / 1024 / 1024:.1f} MB 空间")
 
 
 # 组件名里出现这些词，大概率是"故障/异常"相关的指示灯，而不是"正常操作提示"
@@ -161,15 +200,21 @@ def suggest_alert_colors(knowledge_base: "LedKnowledgeBase", vendor: str, model:
     return suggested, evidence
 
 
-def resolve_alert_colors(knowledge_base: "LedKnowledgeBase"):
+def resolve_alert_colors(
+        knowledge_base,
+        default_vendor,
+        default_model):
     """得到最终生效的 ALERT_COLORS：手动覆盖优先，否则用知识库自动推导的结果。"""
     if ALERT_COLORS_OVERRIDE is not None:
         logger.debug(f"报警颜色使用手动覆盖设置: {ALERT_COLORS_OVERRIDE}")
         return set(ALERT_COLORS_OVERRIDE)
 
-    all_vendor_models = {(DEFAULT_VENDOR, DEFAULT_MODEL)}
-    all_vendor_models.update(STATION_VENDOR_MODEL.values())
-
+    all_vendor_models = {
+        (default_vendor, default_model)
+    }
+    all_vendor_models.update(
+        station_vendor_model.values()
+    )
     combined = set()
     for vendor, model in all_vendor_models:
         suggested, evidence = suggest_alert_colors(knowledge_base, vendor, model)
@@ -193,30 +238,29 @@ def resolve_alert_colors(knowledge_base: "LedKnowledgeBase"):
 def classify_color(hsv_roi):
     h, s, v = cv2.split(hsv_roi)
     colored_mask = s > MIN_SATURATION_FOR_COLOR
-    total = h.size
-    colored_count = int(np.count_nonzero(colored_mask))
 
-    if total == 0 or colored_count / total < COLOR_PIXEL_MIN_RATIO:
-        return None
+    if np.count_nonzero(colored_mask) == 0:
+        return None, None, None
 
     hues = h[colored_mask]
+    sats = s[colored_mask]
 
-    red_mask = np.zeros_like(hues, dtype=bool)
-    for lo, hi in RED_HUE_RANGES:
-        red_mask |= (hues >= lo) & (hues <= hi)
-    red_count = int(np.count_nonzero(red_mask))
-    yellow_count = int(np.count_nonzero(
-        (hues >= YELLOW_HUE_RANGE[0]) & (hues <= YELLOW_HUE_RANGE[1])))
-    green_count = int(np.count_nonzero(
-        (hues >= GREEN_HUE_RANGE[0]) & (hues <= GREEN_HUE_RANGE[1])))
-    blue_count = int(np.count_nonzero(
-        (hues >= BLUE_HUE_RANGE[0]) & (hues <= BLUE_HUE_RANGE[1])))
+    median_hue = int(np.median(hues))
+    median_sat = int(np.median(sats))
 
-    counts = {"red": red_count, "yellow": yellow_count, "green": green_count, "blue": blue_count}
-    best_color = max(counts, key=counts.get)
-    if counts[best_color] == 0:
-        return None
-    return best_color
+    # Alert（红+Amber）
+    if 0 <= median_hue <= 18:
+        return "amber", median_hue, median_sat
+
+    # Green
+    elif 58 <= median_hue <= 70:
+        return "green", median_hue, median_sat
+
+    # Blue
+    elif 95 <= median_hue <= 130:
+        return "blue", median_hue, median_sat
+
+    return None, median_hue, median_sat
 
 
 def detect_led_candidates(frame):
@@ -258,14 +302,21 @@ def detect_led_candidates(frame):
         sx = max(0, x - 3)
         sy = max(0, y - 3)
         roi = hsv_full[sy:sy + h + 6, sx:sx + w + 6]
-        color_label = classify_color(roi)
+        color_label, median_hue, median_sat = classify_color(roi)
+
+        max_v_in_roi = int(np.max(roi[:, :, 2])) if roi.size else 0
+        if not DEBUG_SHOW_AREA and max_v_in_roi < BRIGHT_THRESHOLD:
+            continue
+
+        color_label, median_hue, median_sat = classify_color(roi)
         if color_label is None:
-            if not DEBUG_SHOW_AREA:
+            if not DEBUG_SHOW_AREA and not DEBUG_SHOW_HSV:
                 continue
-            color_label = "?"  # 标定模式下颜色分类失败也照样显示面积，方便观察
+            color_label = "?"  # 标定模式下颜色分类失败也照样显示面积/HSV，方便观察
 
         # 换算回原始画面坐标(如果用了SCAN_ROI裁剪，坐标要加回偏移量)
-        found.append((x + roi_offset_x, y + roi_offset_y, w, h, color_label, int(area)))
+        found.append((x + roi_offset_x, y + roi_offset_y, w, h, color_label, int(area),
+                      median_hue, median_sat))
 
     return found
 
@@ -281,7 +332,8 @@ def _is_placeholder_url(url: str) -> bool:
 def send_stop_command(reason_color, station_id="unknown"):
     """通知巡检条停止。目前是HTTP占位实现，等接口定了改这里就行。"""
     if _is_placeholder_url(RAIL_STOP_URL):
-        logger.debug("RAIL_STOP_URL还是占位地址，跳过实际发送")
+        logger.warning("RAIL_STOP_URL还是占位地址(<rail-controller-ip>)，跳过实际发送——"
+                       "巡检条不会真的停下来！这不是正常状态，请尽快配置真实地址")
         return
     try:
         resp = requests.post(
@@ -298,7 +350,8 @@ def send_stop_command(reason_color, station_id="unknown"):
 
 def send_resume_command(station_id="unknown"):
     if _is_placeholder_url(RAIL_RESUME_URL):
-        logger.debug("RAIL_RESUME_URL还是占位地址，跳过实际发送")
+        logger.warning("RAIL_RESUME_URL还是占位地址(<rail-controller-ip>)，跳过实际发送——"
+                       "巡检条不会真的收到继续指令！这不是正常状态，请尽快配置真实地址")
         return
     try:
         resp = requests.post(
@@ -365,33 +418,51 @@ def write_alert_log(color_label, pattern, video_path, explanation):
 
 
 def main():
-    global DEFAULT_VENDOR
-    global DEFAULT_MODEL
-    global STATION_VENDOR_MODEL
-
     ensure_dirs()
+
+    if _is_placeholder_url(RAIL_STOP_URL) or _is_placeholder_url(RAIL_RESUME_URL):
+        logger.warning(
+            "=" * 60 + "\n"
+            "启动检查: RAIL_STOP_URL / RAIL_RESUME_URL 还是占位地址！\n"
+            "这个状态下巡检条不会真的被停下来或恢复，只是脚本自己在\n"
+            "本地判断颜色、写日志——如果这是正式部署环境，请立刻停下来\n"
+            "把这两个地址改成真实地址，否则出了故障也不会真的停车\n"
+            + "=" * 60)
+
+    runtime_config = get_runtime_config()
+
+    default_vendor = runtime_config["default"]["vendor"]
+    default_model = runtime_config["default"]["model"]
+
+    station_vendor_model = {}
+
+    for station, vm in runtime_config["stations"].items():
+        station_vendor_model[station] = (
+            vm["vendor"],
+            vm["model"]
+        )
+
 
     knowledge_base = LedKnowledgeBase(
         knowledge_dir=KNOWLEDGE_DIR
     )
 
-    # 一句话获取配置
-    config = get_runtime_config()
+    alert_colors = resolve_alert_colors(
+        knowledge_base,
+        default_vendor,
+        default_model
+    )
 
-    DEFAULT_VENDOR = config["default"]["vendor"]
-    DEFAULT_MODEL = config["default"]["model"]
-
-    STATION_VENDOR_MODEL = {
-        station: (vm["vendor"], vm["model"])
-        for station, vm in config["stations"].items()
-    }
-
-    alert_colors = resolve_alert_colors(knowledge_base)
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-
-
+    cap = cv2.VideoCapture(CAMERA_SOURCE)
     if not cap.isOpened():
-        logger.error("无法打开摄像头，退出")
+        if isinstance(CAMERA_SOURCE, str):
+            logger.error(
+                f"无法打开摄像头，退出。CAMERA_SOURCE当前是网络地址: {CAMERA_SOURCE}\n"
+                f"排查建议: 1) 先用VLC的'打开网络串流'确认这个地址真的能播放画面 "
+                f"2) 检查账号密码、端口、路径是否正确 "
+                f"3) 确认这台电脑跟摄像头在同一个网络、能ping通")
+        else:
+            logger.error("无法打开摄像头，退出")
         return
 
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640
@@ -415,6 +486,9 @@ def main():
     last_observation_log_time = 0.0
     video_path = None
 
+    cleanup_old_videos()   # 启动时先清理一次
+    last_cleanup_check_time = time.time()
+
     logger.debug("巡检监控已启动，全自动运行中...")
 
     try:
@@ -424,6 +498,11 @@ def main():
                 logger.error("读取摄像头帧失败，重试中...")
                 time.sleep(0.5)
                 continue
+
+            now_for_cleanup = time.time()
+            if now_for_cleanup - last_cleanup_check_time >= CLEANUP_CHECK_INTERVAL_SECONDS:
+                cleanup_old_videos()
+                last_cleanup_check_time = now_for_cleanup
 
             frame_buffer.append(frame.copy())
             candidates = detect_led_candidates(frame)
@@ -437,17 +516,44 @@ def main():
 
             if SHOW_WINDOW:
                 display = frame.copy()
-                for (x, y, w, h, color_label, area) in candidates:
-                    cv2.rectangle(display, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                    label = f"{color_label} area={area}" if DEBUG_SHOW_AREA else color_label
-                    cv2.putText(display, label, (x, y - 6),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+                for (x, y, w, h, color_label, area, median_hue, median_sat) in candidates:
+                    # 只画异常灯
+                    if color_label != "amber":
+                        continue
+
+                    cv2.rectangle(display, (x, y), (x + w, y + h), (0, 0, 255), 2)
+
+                    label = f"{color_label} H={median_hue} S={median_sat}"
+
+                    cv2.putText(
+                        display,
+                        label,
+                        (x, y - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (0, 0, 255),
+                        2,
+                    )
+                    
                 cv2.putText(display, f"state={state}", (10, frame_h - 12),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1)
                 if DEBUG_SHOW_AREA:
                     cv2.putText(display, "DEBUG_SHOW_AREA=True 标定模式：先记录数值再关掉", (10, 30),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
+                if DEBUG_SHOW_HSV:
+                    cv2.putText(display, "DEBUG_SHOW_HSV=True 标定模式：点画面可打印该点H/S值", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
                 cv2.imshow("patrol_monitor (debug)", display)
+
+                if DEBUG_SHOW_HSV:
+                    def _on_mouse_click(event, mx, my, flags, param):
+                        if event == cv2.EVENT_LBUTTONDOWN:
+                            hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                            if 0 <= my < hsv_frame.shape[0] and 0 <= mx < hsv_frame.shape[1]:
+                                ph, ps, pv = hsv_frame[my, mx]
+                                print(f"点击坐标=({mx},{my})  H={ph} S={ps} V={pv}")
+                    cv2.setMouseCallback("patrol_monitor (debug)", _on_mouse_click)
+
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
 
@@ -490,8 +596,8 @@ def main():
                     # 还是会记一条，不会永远不记。
                     still_gathering = color_changed and observed_pattern == "unknown"
                     if (color_changed or interval_passed) and not still_gathering:
-                        vendor, model = STATION_VENDOR_MODEL.get(
-                            "unknown", (DEFAULT_VENDOR, DEFAULT_MODEL))
+                        vendor, model = station_vendor_model.get(
+                            "unknown", (default_vendor, default_model))
                         obs_pattern_for_lookup = observed_pattern if observed_pattern != "unknown" else None
                         obs_explanation = knowledge_base.describe(
                             vendor, model, color=observed_color, pattern=obs_pattern_for_lookup)
@@ -509,8 +615,8 @@ def main():
                     # 所以这里统一用 DEFAULT_VENDOR/MODEL 查表；等巡检条那边能
                     # 告诉脚本当前station_id后，可以按 STATION_VENDOR_MODEL 查出
                     # 对应厂商型号，实现"不同server用不同说明书解释"
-                    vendor, model = STATION_VENDOR_MODEL.get(
-                        "unknown", (DEFAULT_VENDOR, DEFAULT_MODEL))
+                    vendor, model = station_vendor_model.get(
+                        "unknown", (default_vendor, default_model))
                     alert_pattern = estimate_color_pattern(color_presence_history, consecutive_alert_color)
                     alert_pattern_for_lookup = alert_pattern if alert_pattern != "unknown" else None
                     explanation = knowledge_base.describe(

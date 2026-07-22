@@ -48,7 +48,7 @@
     {
       "id": "r5",
       "component": "Fault LED",
-      "color": "yellow",
+      "color": "amber",
       "pattern": "unknown",
       "description": "Fault LED Amber On: System or component faulted",
       "page": 16,
