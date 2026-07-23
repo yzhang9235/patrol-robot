@@ -5,7 +5,11 @@ led_knowledge_lookup.py
 里查出说明书原文描述。这里不包含任何"红色=严重故障"这类硬编码语义——
 所有解释都来自 build_led_knowledge.py 从说明书里提取出的原文。
 
-用法(在 patrol_monitor.py 或其他脚本里)：
+【新增】同一个knowledge文件里现在还存了这个型号每颗LED的相对位置模板
+(led_positions字段)，是巡检脚本用--calibrate标定模式写入的，跟rules
+是同一份文件、不同字段，不需要额外的position文件。
+
+用法(在 monitor_with_rules.py 或其他脚本里)：
     from led_knowledge_lookup import LedKnowledgeBase
 
     kb = LedKnowledgeBase(knowledge_dir="knowledge")
@@ -13,6 +17,8 @@ led_knowledge_lookup.py
     matches = kb.lookup("NVIDIA", "DGX A100", color="red", pattern="solid")
     for m in matches:
         print(m["component"], m["description"])
+
+    positions = kb.get_led_positions("NVIDIA", "DGX A100")
 
 如果某个station还没对应的说明书规则文件，lookup会返回空列表，
 调用方应该自己决定兜底怎么处理(比如只报"检测到红色异常，暂无对应说明书解释")，
@@ -84,9 +90,61 @@ class LedKnowledgeBase:
             m = matches[0]
             return f"[{m['component']}] {m['description']}"
 
-        # 多条匹配(比如没有pattern信息、同一颜色对应好几种组件/状态)，全部列出，
-        # 不擅自挑一个当作"最可能的答案"
         lines = [f"检测到{color}色异常，说明书里有{len(matches)}种可能对应的情况:"]
         for m in matches:
             lines.append(f"  - [{m['component']}/{m['pattern']}] {m['description']}")
         return "\n".join(lines)
+
+    # ============ 新增：LED相对位置模板的读写 ============
+
+    def get_led_positions(self, vendor: str, model: str) -> List[Dict[str, Any]]:
+        """
+        返回这个型号标定好的LED相对位置模板列表。
+        格式: [{"component_name":str, "rel_x":float, "rel_y":float,
+                "rel_w":float, "rel_h":float}, ...]
+        (rel_*是相对面板panel_bbox的比例坐标，0~1)
+        没标定过就返回空列表，调用方要判断是否需要提示先用--calibrate标定。
+        """
+        slug = self._slug(vendor, model)
+        if slug not in self._cache:
+            if not self.load(vendor, model):
+                return []
+        data = self._cache.get(slug, {})
+        return data.get("led_positions", [])
+
+    def save_led_positions(self, vendor: str, model: str,
+                            positions: List[Dict[str, Any]]):
+        """
+        把标定好的LED相对位置模板写回 knowledge/<vendor>_<model>.json，
+        跟已有的rules字段写在同一个文件里，不新建单独的位置文件。
+        这是对led_positions字段的整份覆盖(重新标定会覆盖旧的位置数据)，
+        但不会动这个文件里已有的rules字段——先读出原文件内容，只替换
+        led_positions这一个字段再写回去。
+
+        如果这个型号还没有knowledge文件(还没跑过build_led_knowledge.py
+        解析说明书)，会先建一个rules为空的骨架文件，等以后有说明书了
+        再补充规则也不会覆盖掉这里存的led_positions
+        (build_led_knowledge.py重新生成时也是先读出已有文件、
+        保留led_positions字段，不是整份覆盖，两边行为一致)。
+        """
+        slug = self._slug(vendor, model)
+        path = self.knowledge_dir / f"{slug}.json"
+
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        else:
+            data = {
+                "vendor": vendor,
+                "model": model,
+                "rules": [],
+            }
+
+        data["led_positions"] = positions
+
+        self.knowledge_dir.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        # 更新缓存，避免保存后马上读取时拿到过期数据
+        self._cache[slug] = data

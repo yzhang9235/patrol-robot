@@ -1,0 +1,80 @@
+{
+  "vendor": "NVIDIA",
+  "model": "测试server",
+  "source_file": "nvdia_rules.png",
+  "extracted_at": "2026-07-23T13:33:27.145984",
+  "rule_count": 5,
+  "rules": [
+    {
+      "id": "r1",
+      "component": "Connecting",
+      "color": "green",
+      "pattern": "blink",
+      "description": "Connecting to DGX H100/H200                                    ¢ Green flashing (1 Hz): Standby (BMC booted)",
+      "page": 1,
+      "source": "nvdia_rules.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r2",
+      "component": "First Boot Setup",
+      "color": "green",
+      "pattern": "blink",
+      "description": "First Boot Setup                                                    e Green flashing (4 Hz): POST in progress",
+      "page": 1,
+      "source": "nvdia_rules.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r3",
+      "component": "Quickstart",
+      "color": "green",
+      "pattern": "solid",
+      "description": "Quickstart and Basic Operation                                    e Green solid On: Power On",
+      "page": 1,
+      "source": "nvdia_rules.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r4",
+      "component": "SBIOS Setti",
+      "color": "blue",
+      "pattern": "blink",
+      "description": "erings                                 ID Button      Press to have the blue LED turn On or blink (configurable through the BMC)",
+      "page": 1,
+      "source": "nvdia_rules.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r5",
+      "component": "Safety Fault LED",
+      "color": "yellow",
+      "pattern": "unknown",
+      "description": "Safety                                                Fault LED      Amber On: System or component faulted",
+      "page": 1,
+      "source": "nvdia_rules.png",
+      "confidence": "low",
+      "ocr": true
+    }
+  ],
+  "led_positions": [
+    {
+      "component_name": "alert_ledalert_led",
+      "rel_x": 0.125,
+      "rel_y": 0.08571428571428572,
+      "rel_w": 1.125,
+      "rel_h": 1.0571428571428572
+    },
+    {
+      "component_name": "power_led",
+      "rel_x": -1.875,
+      "rel_y": -1.2571428571428571,
+      "rel_w": 1.0625,
+      "rel_h": 0.9714285714285714
+    }
+  ]
+}

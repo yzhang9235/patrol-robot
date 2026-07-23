@@ -27,6 +27,9 @@
    如果服务器配置发生变化，可以通过以下命令重新配置：
        python monitor_with_rules.py --configure
 
+4. led_position_db.py
+   LED位置数据库：解决"每来一台新server都要重新框选ROI"的问题
+
 --------------------------------------------------------------------------------
 需要完善的部分
 
@@ -50,18 +53,33 @@
 --------------------------------------------------------------------------------
 使用方法
 
-1. 从文档或图片中生成 LED 规则：
+一. 假设现在拿到一台从没见过的型号、装在一个新的station位置:
 
-       python build_led_knowledge.py HPE.png --vendor xxx --model "xxx"
+1. 先解析说明书,生成规则文件(只需要做一次,以后同型号不用再做)
+    python3 build_led_knowledge.py 说明书.pdf --vendor NVIDIA --model "DGX A100"
 
-   示例：
-       python build_led_knowledge.py HPE.png \
-       --vendor HPE \
-       --model "ProLiant DL360 Gen10"
+2. 标定这个station的面板位置 + 这个型号的LED位置(每个型号第一次遇到时做一次)
+    python3 monitor_with_rules.py --calibrate --station server_01 --vendor NVIDIA --model "DGX A100"
+    - 点面板左上角→右下角
+    - 因为这个型号还没标定过LED,会提示你逐颗框选、输入名字
 
-2. 启动监控：
+3. 开始巡检
+    python3 monitor_with_rules.py
 
-       python monitor_with_rules.py
+二. 日常巡检
+    python3 monitor_with_rules.py
+
+三. 一个新的位置放的型号已经被存储过
+    python3 monitor_with_rules.py --calibrate --station server_02 --vendor NVIDIA --model "DGX A100"
+    - 只需要点这个新station的面板框(2个点)，因为NVIDIA DGX A100之前标定过LED位置,会提示"已标定N颗,是否复用"——直接回车就行,不用重新框LED
+
+四. 一个站位上的型号换了
+python3 build_led_knowledge.py 新说明书.pdf --vendor Dell --model "PowerEdge R760"
+python3 monitor_with_rules.py --calibrate --station server_01 --vendor Dell --model "PowerEdge R760"
+两步都要做——先建规则文件,再标定(这个型号是新的,所以还是要逐颗框LED)。
+
+五. LED位置框歪了/摄像头挪动过,需要重新标定同一个station
+python3 monitor_with_rules.py --calibrate --station server_01 --vendor NVIDIA --model "DGX A100"
 
 --------------------------------------------------------------------------------
 
@@ -129,3 +147,21 @@ USAGE
        python monitor_with_rules.py
 
 --------------------------------------------------------------------------------
+
+
+
+**What actually happens
+
+led_positions (where each LED sits) — this is what --calibrate handles:
+
+When you run --calibrate --station X --vendor Y --model Z, it checks: does knowledge/Y_Z.json already have led_positions for this vendor/model?
+If yes → it shows you "already calibrated N LEDs" and asks: reuse, or redo? So yes, existing LED position data does show up and gets reused if you don't say y.
+If no → you have to click through and frame every LED manually.
+Either way, it always asks you to click the panel_bbox (2 points) fresh each time — that part is per-station (physical camera framing), not reusable across stations even for the same model.
+
+**So the actual flow when you arrive at a new server
+Run --calibrate for that station + vendor/model
+It checks the knowledge file: led_positions → reuse-or-redo prompt (as above)
+It doesn't touch rules at all — rules just sit there in the file already (assuming you ran build_led_knowledge.py for that model at some point in the past)
+You only click the panel_bbox, and possibly LEDs if new/redoing
+Saves panel_bbox → config/runtime_config.json, saves led_positions (if changed) → knowledge/<vendor>_<model>.json

@@ -1,0 +1,5 @@
+[high][第1页][Connecting][green/blink][OCR] Connecting to DGX H100/H200                                    ¢ Green flashing (1 Hz): Standby (BMC booted)
+[high][第1页][First Boot Setup][green/blink][OCR] First Boot Setup                                                    e Green flashing (4 Hz): POST in progress
+[high][第1页][Quickstart][green/solid][OCR] Quickstart and Basic Operation                                    e Green solid On: Power On
+[high][第1页][SBIOS Setti][blue/blink][OCR] erings                                 ID Button      Press to have the blue LED turn On or blink (configurable through the BMC)
+[low][第1页][Safety Fault LED][yellow/unknown][OCR] Safety                                                Fault LED      Amber On: System or component faulted

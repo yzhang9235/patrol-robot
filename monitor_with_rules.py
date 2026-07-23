@@ -2,7 +2,7 @@
 """
 patrol_monitor.py
 全自动巡检LED监控：巡检条移动过程中持续识别LED颜色
-    - 遇到 红/黄 -> 发送"停止"指令给巡检条，开始录像，记录报警日志
+    - 遇到 红/黄(amber) -> 发送"停止"指令给巡检条，开始录像，记录报警日志
     - 遇到 绿色 (或没检测到异常色) -> 发送"继续"指令，巡检条前进检查下一台
 
 全程无需人工操作，脚本本身就是一个持续运行的服务（可用 systemd / supervisor 之类常驻）。
@@ -12,6 +12,20 @@ patrol_monitor.py
 只需要改 send_stop_command() / send_resume_command() 这两个函数内部的实现，
 外面的状态机逻辑完全不用动。
 
+【标定模式】
+    python3 monitor_with_rules.py --calibrate --station <station_id> --vendor <厂商> --model "<型号>"
+标定一个station的面板位置(panel_bbox)，以及(如果这个型号还没标定过)
+每颗LED相对面板的位置(led_positions)。
+    - panel_bbox 写入 config/runtime_config.json 对应station_id下
+    - led_positions 写入 knowledge/<vendor>_<model>.json (跟rules同一个文件)
+同一个vendor+model只需要标定一次led_positions，以后新的station只要
+panel_bbox对得上、vendor/model选对，就能直接复用，不用重新框每颗LED。
+
+【正常巡检模式】不加--calibrate参数，直接:
+    python3 monitor_with_rules.py
+会自动尝试用标定好的坐标做精确定点检测；如果当前station还没标定，
+会退化成旧的整片ROI找轮廓的检测方式(不会直接跑不起来，但精度不如标定后)。
+
 配置项都在最上面 CONFIG 区域，先改这些：
     RAIL_STOP_URL / RAIL_RESUME_URL   -> 巡检条的接口地址（占位，需替换成真实地址）
     ALERT_LOG_DIR / ALERT_VIDEO_DIR   -> 报警日志和视频的保存路径
@@ -19,6 +33,8 @@ patrol_monitor.py
     RECORD_SECONDS_AFTER_TRIGGER      -> 报警后继续录多少秒才停止录像、恢复巡检
 """
 
+import argparse
+import sys
 import cv2
 import json
 import re
@@ -31,7 +47,13 @@ from collections import deque
 from datetime import datetime
 
 from led_knowledge_lookup import LedKnowledgeBase
-from config_manager import get_runtime_config
+from config_manager import (
+    get_runtime_config,
+    load_runtime_config,
+    get_current_station,
+    set_station_panel_bbox,
+    set_current_station,
+)
 
 # ============ CONFIG ============
 RAIL_STOP_URL = "http://<rail-controller-ip>/api/stop"      # TODO: 换成真实地址
@@ -39,11 +61,7 @@ RAIL_RESUME_URL = "http://<rail-controller-ip>/api/resume"  # TODO: 换成真实
 RAIL_REQUEST_TIMEOUT = 2.0   # 秒，网络请求超时时间，避免卡住主循环
 
 CAMERA_SOURCE = "rtsp://admin:jiandandian@1@192.168.1.129:554/stream1"
-# 本地USB摄像头填数字(0/1/2...)；网络摄像头(巡检条自带的那种)填RTSP地址字符串，
-# 格式一般是: "rtsp://用户名:密码@摄像头IP:554/路径"
-# 具体路径每个厂商不一样，先用VLC的"打开网络串流"功能试出正确地址，
-# 确认能播放画面之后，把同一个地址填在这里，例如:
-# CAMERA_SOURCE = "rtsp://admin:12345@192.168.1.100:554/stream1"
+# 本地USB摄像头填数字(0/1/2...)；网络摄像头(巡检条自带的那种)填RTSP地址字符串
 SHOW_WINDOW = True           # 生产环境建议 False（无人值守，不需要显示画面）；调试时改 True
 
 ALERT_LOG_DIR = Path("alerts/logs")
@@ -51,57 +69,33 @@ ALERT_VIDEO_DIR = Path("alerts/videos")
 OBSERVATION_LOG_DIR = Path("alerts/observations")   # 非报警颜色(绿色、蓝色等)的轻量级记录，只写日志不录像
 
 # ---------- 旧文件自动清理 ----------
-# 视频文件占空间最大，长期无人值守跑下去迟早把硬盘写满，加个按天数清理的机制。
-# 日志是纯文本，占用很小，不清理问题也不大，这里只清理视频；
-# 如果想连日志一起清，把 ALERT_LOG_DIR / OBSERVATION_LOG_DIR 也加进
-# cleanup_old_files 的调用列表里就行
 RETENTION_DAYS = 30              # 超过这么多天的旧录像会被自动删除
 CLEANUP_CHECK_INTERVAL_SECONDS = 3600   # 每隔多久检查一次要不要清理(不用每帧都扫一遍目录)
 OBSERVATION_LOG_MIN_INTERVAL = 30.0   # 同一个颜色至少间隔这么多秒才重复记一次，避免刷屏
 
-CONSECUTIVE_FRAMES_TO_CONFIRM = 2    # 连续5帧都检测到红/黄，才判定为真实报警（约0.15秒@30fps）
+CONSECUTIVE_FRAMES_TO_CONFIRM = 5     # 连续几帧都检测到红/黄，才判定为真实报警（防误判抖动）
 RECORD_SECONDS_AFTER_TRIGGER = 6.5    # 触发确认后，继续录多少秒才停止录像、恢复巡检
 PRE_TRIGGER_BUFFER_SECONDS = 2.0      # 报警前缓冲：把触发前2秒的画面也存进视频，方便看清"怎么变的"
-# 两者相加 = 8.5秒，比模拟器10秒的切换周期留了约1.5秒安全余量
-# (给确认延迟、指令发送等留出空间，避免录像跨到下一个unit)
 VIDEO_FPS = 20.0
 
 # ---------- 闪烁检测(仅用于观察记录里标注"常亮/闪烁"，不影响红黄的报警触发) ----------
-# 原理很简单：滚动记录最近 BLINK_WINDOW_SECONDS 秒里每一帧"这个颜色有没有出现"，
-# 出现比例接近100%就是常亮，比例在中间(有时候有、有时候没有)就是闪烁，
-# 数据不够或者太少见就先标"unknown"，不瞎猜
 BLINK_WINDOW_SECONDS = 2.0
 BLINK_MIN_SAMPLES = 10          # 窗口里至少要有这么多帧样本才敢下判断，不够就是unknown
 BLINK_SOLID_RATIO = 0.85        # 出现比例 >= 这个值 判定为常亮(solid)
 BLINK_MIN_RATIO_TO_COUNT = 0.15  # 出现比例低于这个值，说明太偶尔出现了，不够格判定成"闪烁"，也是unknown
 
-# ---------- 扫描区域(ROI) ----------
-# 只在这个区域内找LED，区域外的一律忽略(手、背景反光、走廊灯光都不会被扫到)
-# 设成 None 表示扫全画面(不建议正式使用)；建议按巡检条实际工作距离下，
-# LED出现的画面位置实测填一个 (x1, y1, x2, y2) 矩形，留一点余量防止对位误差
-SCAN_ROI = (2100, 650, 2450, 850)  # 例如: (200, 150, 1000, 500)
+# ---------- 扫描区域(ROI)：仅在"当前station还没标定LED位置"时作为退化方案使用 ----------
+# 标定好之后(led_positions + panel_bbox都有了)，检测会自动改用精确定点模式，
+# 不再依赖这个大范围ROI找轮廓；这个值只在退化模式下生效
+SCAN_ROI = (2100, 650, 2450, 850)
 
-# 标定模式：True时不做面积过滤，把每个候选框的实测面积打印在框旁边，
-# 用来在实际工作距离下读出真实的面积数值，标定完 MIN_AREA/MAX_AREA 后改回 False
-DEBUG_SHOW_AREA = False
+DEBUG_SHOW_AREA = False   # 标定面积用的调试开关，正常巡检时保持False
+DEBUG_SHOW_HSV = True     # 调试模式：显示每个候选框的H/S数值，鼠标点击画面打印该点HSV
 
-# 调试模式：True时把每个候选框的中位数H(色相)/S(饱和度)值显示在框旁边，
-# 而且不做颜色分类过滤(哪怕最终判定不出是哪个颜色也照样显示数值)。
-# 用来对比"真实LED"和"背景反光/金属高光"的H/S数值到底差多少，
-# 从而精确收紧 BLUE_HUE_RANGE / MIN_SATURATION_FOR_COLOR 这些阈值，
-# 而不是凭感觉调。标定完记得改回 False。
-DEBUG_SHOW_HSV = True
-
-# ---------- 亮度/形状参数 ----------
-# 下面这些面积参数要按巡检条"实际工作距离"下实测的LED像素大小来调，
-# 不要用近距离测试的结果(比如拿手机怼近镜头拍)，那样得出的MAX_AREA会偏小，
-# 导致真实工作距离下太大或太小都被误判成反光/白墙滤掉
+# ---------- 亮度/形状参数(退化模式下的轮廓检测用) ----------
 BRIGHT_THRESHOLD = 254
 MIN_AREA = 15
-MAX_AREA = 200000   # 大幅放宽：反光过滤已经交给饱和度判断(classify_color)负责，
-                     # 这里的面积上限只用来防止"整片画面都过曝"这种极端情况，
-                     # 不再承担区分近距离大LED和反光的职责，避免每天因光线/
-                     # 距离的微小差异反复失效
+MAX_AREA = 200000
 MIN_CIRCULARITY = 0.3
 PADDING = 4
 
@@ -113,20 +107,9 @@ GREEN_HUE_RANGE = (58, 70)
 BLUE_HUE_RANGE = (95, 130)
 OK_COLORS = {"green"}
 
+ALERT_COLORS_OVERRIDE = {"amber"}   # 手动指定：红色和琥珀色(amber)都触发报警
 
-# ALERT_COLORS 不再是写死的全局常量：不同厂商说明书里同一个颜色的含义可能完全
-# 不一样(比如这次NVIDIA的蓝色是ID识别灯，属于正常操作，不该触发报警)，所以
-# "哪些颜色算异常"改成程序启动时根据当前厂商的knowledge文件自动推导，
-# 推导逻辑见下面的 suggest_alert_colors()。如果自动推导的结果不对，
-# 可以用 ALERT_COLORS_OVERRIDE 手动覆盖(填了就完全以这个为准，不再看推导结果)。
-ALERT_COLORS_OVERRIDE = {"amber"}   # 手动指定：红色和琥珀色(amber，内部归到yellow这个桶)都触发报警
-
-# ---------- LED含义知识库(Vendor Manual Parser生成的knowledge schema) ----------
-# 用 build_led_knowledge.py 解析说明书生成 knowledge/<vendor>_<model>.json 后，
-# 这里指定默认厂商型号；如果巡检条路径上不同server是不同厂商/型号，
-# 在 STATION_VENDOR_MODEL 里按 station_id 覆盖，不用改代码逻辑，加一行配置就行
 KNOWLEDGE_DIR = "knowledge"
-runtime_config = None
 # =================================
 
 logging.basicConfig(
@@ -142,9 +125,7 @@ def ensure_dirs():
 
 
 def cleanup_old_videos():
-    """删掉超过 RETENTION_DAYS 天的旧录像文件，避免长期无人值守跑到把硬盘写满。
-    只删视频，不动日志(日志是文本，占用小，而且是排查问题的历史记录，更值得留久一点)。
-    """
+    """删掉超过 RETENTION_DAYS 天的旧录像文件，避免长期无人值守跑到把硬盘写满。"""
     cutoff = time.time() - RETENTION_DAYS * 86400
     deleted_count = 0
     deleted_bytes = 0
@@ -165,21 +146,11 @@ def cleanup_old_videos():
             f"释放约 {deleted_bytes / 1024 / 1024:.1f} MB 空间")
 
 
-# 组件名里出现这些词，大概率是"故障/异常"相关的指示灯，而不是"正常操作提示"
-# (比如NVIDIA那个蓝色ID灯，组件名是"ID Button"，不匹配这些词，就不会被
-# 自动归为报警颜色——这正是我们想要的，蓝色ID灯是正常操作，不该触发报警)
 FAULT_COMPONENT_KEYWORDS = re.compile(
     r"fault|error|warn|alarm|fail|故障|异常|告警|错误", re.IGNORECASE)
 
 
 def suggest_alert_colors(knowledge_base: "LedKnowledgeBase", vendor: str, model: str):
-    """
-    扫描某个厂商型号的knowledge文件，把"组件名里带故障/异常相关词"的规则
-    用到的颜色，作为建议的报警颜色返回。green永远不建议报警(哪怕说明书里
-    真的有个组件叫"Fault"但颜色恰好是绿的，这种极端情况留给
-    ALERT_COLORS_OVERRIDE去手动纠正，不在这里自动处理)。
-    返回 (建议的颜色集合, 用于打印的详细依据列表)
-    """
     knowledge_base.load(vendor, model)
     slug = knowledge_base._slug(vendor, model)
     data = knowledge_base._cache.get(slug)
@@ -200,21 +171,15 @@ def suggest_alert_colors(knowledge_base: "LedKnowledgeBase", vendor: str, model:
     return suggested, evidence
 
 
-def resolve_alert_colors(
-        knowledge_base,
-        default_vendor,
-        default_model):
+def resolve_alert_colors(knowledge_base, default_vendor, default_model, station_vendor_model):
     """得到最终生效的 ALERT_COLORS：手动覆盖优先，否则用知识库自动推导的结果。"""
     if ALERT_COLORS_OVERRIDE is not None:
         logger.debug(f"报警颜色使用手动覆盖设置: {ALERT_COLORS_OVERRIDE}")
         return set(ALERT_COLORS_OVERRIDE)
 
-    all_vendor_models = {
-        (default_vendor, default_model)
-    }
-    all_vendor_models.update(
-        station_vendor_model.values()
-    )
+    all_vendor_models = {(default_vendor, default_model)}
+    all_vendor_models.update(station_vendor_model.values())
+
     combined = set()
     for vendor, model in all_vendor_models:
         suggested, evidence = suggest_alert_colors(knowledge_base, vendor, model)
@@ -248,15 +213,10 @@ def classify_color(hsv_roi):
     median_hue = int(np.median(hues))
     median_sat = int(np.median(sats))
 
-    # Alert（红+Amber）
     if 0 <= median_hue <= 18:
         return "amber", median_hue, median_sat
-
-    # Green
     elif 58 <= median_hue <= 70:
         return "green", median_hue, median_sat
-
-    # Blue
     elif 95 <= median_hue <= 130:
         return "blue", median_hue, median_sat
 
@@ -264,7 +224,11 @@ def classify_color(hsv_roi):
 
 
 def detect_led_candidates(frame):
-    """返回 [(x,y,w,h,color_label), ...]，只保留能归类为红/黄/绿的候选框"""
+    """退化模式：在SCAN_ROI整片区域里找轮廓。仅当当前station还没标定
+    LED位置时使用；标定完之后正常巡检走 detect_led_candidates_by_positions()。
+    返回格式跟标定模式统一成9元组，component_name固定是None，方便调用方
+    (main循环)不用区分是哪种模式来的候选框，用同一套代码处理。
+    """
     roi_offset_x, roi_offset_y = 0, 0
     if SCAN_ROI is not None:
         x1, y1, x2, y2 = SCAN_ROI
@@ -303,34 +267,68 @@ def detect_led_candidates(frame):
         sy = max(0, y - 3)
         roi = hsv_full[sy:sy + h + 6, sx:sx + w + 6]
         color_label, median_hue, median_sat = classify_color(roi)
+        if color_label is None:
+            if not DEBUG_SHOW_AREA and not DEBUG_SHOW_HSV:
+                continue
+            color_label = "?"
 
-        max_v_in_roi = int(np.max(roi[:, :, 2])) if roi.size else 0
-        if not DEBUG_SHOW_AREA and max_v_in_roi < BRIGHT_THRESHOLD:
+        found.append((x + roi_offset_x, y + roi_offset_y, w, h, color_label, int(area),
+                      median_hue, median_sat, None))
+
+    return found
+
+
+def resolve_absolute_led_rois(panel_bbox, led_positions):
+    """把标定好的LED相对坐标(0~1)，按当前station实测的panel_bbox换算成
+    画面里的绝对像素坐标。
+    panel_bbox: {"x":,"y":,"w":,"h":}
+    led_positions: [{"component_name":,"rel_x":,"rel_y":,"rel_w":,"rel_h":}, ...]
+    返回: [(component_name, x, y, w, h), ...]
+    """
+    px, py, pw, ph = panel_bbox["x"], panel_bbox["y"], panel_bbox["w"], panel_bbox["h"]
+    rois = []
+    for item in led_positions:
+        x = int(round(px + item["rel_x"] * pw))
+        y = int(round(py + item["rel_y"] * ph))
+        w = int(round(item["rel_w"] * pw))
+        h = int(round(item["rel_h"] * ph))
+        rois.append((item["component_name"], x, y, w, h))
+    return rois
+
+
+def detect_led_candidates_by_positions(frame, absolute_rois):
+    """标定模式：按标定好的LED坐标逐个取色判断，代替"整片区域找轮廓"。
+    好处：报警时能精确定位是哪颗LED(component_name)，而不是笼统的"检测到红色"。
+    返回: [(x,y,w,h,color_label,area,median_hue,median_sat,component_name), ...]
+    """
+    hsv_full = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    frame_h, frame_w = frame.shape[:2]
+    found = []
+    for component_name, x, y, w, h in absolute_rois:
+        x = max(0, min(x, frame_w - 1))
+        y = max(0, min(y, frame_h - 1))
+        w = max(1, min(w, frame_w - x))
+        h = max(1, min(h, frame_h - y))
+        roi = hsv_full[y:y + h, x:x + w]
+        if roi.size == 0:
             continue
 
         color_label, median_hue, median_sat = classify_color(roi)
         if color_label is None:
-            if not DEBUG_SHOW_AREA and not DEBUG_SHOW_HSV:
+            if not DEBUG_SHOW_HSV:
                 continue
-            color_label = "?"  # 标定模式下颜色分类失败也照样显示面积/HSV，方便观察
+            color_label = "?"
 
-        # 换算回原始画面坐标(如果用了SCAN_ROI裁剪，坐标要加回偏移量)
-        found.append((x + roi_offset_x, y + roi_offset_y, w, h, color_label, int(area),
-                      median_hue, median_sat))
+        found.append((x, y, w, h, color_label, w * h, median_hue, median_sat, component_name))
 
     return found
 
 
 def _is_placeholder_url(url: str) -> bool:
-    """RAIL_STOP_URL/RAIL_RESUME_URL 还是模板里的 <rail-controller-ip> 占位符时，
-    真去发网络请求只会必然失败、每次触发都报错刷屏，没有意义——先跳过，
-    等真实地址配置好之后这个判断会自动失效，逻辑不用再改。
-    """
     return "<" in url and ">" in url
 
 
 def send_stop_command(reason_color, station_id="unknown"):
-    """通知巡检条停止。目前是HTTP占位实现，等接口定了改这里就行。"""
     if _is_placeholder_url(RAIL_STOP_URL):
         logger.warning("RAIL_STOP_URL还是占位地址(<rail-controller-ip>)，跳过实际发送——"
                        "巡检条不会真的停下来！这不是正常状态，请尽快配置真实地址")
@@ -343,8 +341,6 @@ def send_stop_command(reason_color, station_id="unknown"):
         )
         logger.debug(f"已发送停止指令 (reason={reason_color}) -> 响应状态 {resp.status_code}")
     except Exception as e:
-        # 网络请求失败不应该让整个监控脚本崩掉——但必须大声记录下来，
-        # 因为这意味着巡检条可能没有真的停下来，需要人工介入排查通信问题
         logger.error(f"停止指令发送失败: {e}（巡检条可能未真正停止，请检查通信链路）")
 
 
@@ -365,11 +361,6 @@ def send_resume_command(station_id="unknown"):
 
 
 def estimate_color_pattern(presence_history, color):
-    """
-    根据最近一段时间"每一帧这个颜色有没有出现"的历史，估计是常亮还是闪烁。
-    presence_history: [(timestamp, {出现的颜色集合}), ...] 按时间顺序
-    返回 "solid" / "blink" / "unknown"
-    """
     if len(presence_history) < BLINK_MIN_SAMPLES:
         return "unknown"
 
@@ -380,15 +371,11 @@ def estimate_color_pattern(presence_history, color):
     if ratio >= BLINK_SOLID_RATIO:
         return "solid"
     if ratio < BLINK_MIN_RATIO_TO_COUNT:
-        return "unknown"  # 太偶尔出现了，可能只是检测抖动，不够格判定成规律闪烁
+        return "unknown"
     return "blink"
 
 
 def write_observation_log(color_label, explanation):
-    """给非报警颜色(比如蓝色ID灯之类)写一条轻量级记录，不录像。
-    不记录绿色(正常状态太频繁，记了也没什么信息量，调用方那边已经过滤掉了)。
-    调用方自己控制调用频率(见main()里的防刷屏逻辑)，这里不做节流。
-    """
     ts = datetime.now()
     record = {
         "timestamp": ts.isoformat(),
@@ -401,7 +388,7 @@ def write_observation_log(color_label, explanation):
     logger.debug(f"非报警观察记录: {record}")
 
 
-def write_alert_log(color_label, pattern, video_path, explanation):
+def write_alert_log(color_label, pattern, video_path, explanation, components=None):
     ensure_dirs()
     ts = datetime.now()
     record = {
@@ -410,12 +397,198 @@ def write_alert_log(color_label, pattern, video_path, explanation):
         "pattern": pattern,
         "video_file": str(video_path),
         "explanation": explanation,
+        "components": components or [],   # 【新增】标定模式下能精确记录是哪几颗LED触发的
     }
     log_file = ALERT_LOG_DIR / f"{ts:%Y-%m-%d}.jsonl"
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
     logger.debug(f"报警记录已写入: {log_file} -> {record}")
 
+
+# ============ 标定模式：交互式框选面板 + LED位置 ============
+
+def _interactive_click_two_points(frame, window_title):
+    """弹窗让人工点两次(左上角->右下角)，返回(x,y,w,h)，按q取消返回None"""
+    points = []
+    display = frame.copy()
+
+    def _on_click(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN and len(points) < 2:
+            points.append((x, y))
+            cv2.circle(display, (x, y), 5, (0, 0, 255), -1)
+            cv2.imshow(window_title, display)
+
+    cv2.imshow(window_title, display)
+    cv2.setMouseCallback(window_title, _on_click)
+
+    while len(points) < 2:
+        key = cv2.waitKey(20) & 0xFF
+        if key == ord('q'):
+            cv2.destroyWindow(window_title)
+            return None
+
+    cv2.destroyWindow(window_title)
+    (x1, y1), (x2, y2) = points
+    x, y = min(x1, x2), min(y1, y2)
+    w, h = abs(x2 - x1), abs(y2 - y1)
+    if w == 0 or h == 0:
+        return None
+    return (x, y, w, h)
+
+
+def _interactive_calibrate_leds(frame, panel_bbox):
+    """
+    交互式框选面板内每一颗LED的绝对坐标，换算成相对panel_bbox的比例坐标。
+    操作：每颗LED先点左上角、再点右下角，框完在终端输入component_name
+    (建议跟knowledge文件里的component名对齐，方便报警时精确查故障说明)，
+    回车后继续框下一颗；还没开始点下一颗时按q结束。
+    返回: [{"component_name":..., "rel_x":..., "rel_y":..., "rel_w":..., "rel_h":...}, ...]
+    """
+    px, py, pw, ph = panel_bbox["x"], panel_bbox["y"], panel_bbox["w"], panel_bbox["h"]
+    display = frame.copy()
+    cv2.rectangle(display, (px, py), (px + pw, py + ph), (255, 0, 0), 2)
+
+    window_name = "框选每颗LED：先点左上角再点右下角，每颗框完在终端输入名字（q结束）"
+    positions = []
+    current_points = []
+
+    def _on_click(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            current_points.append((x, y))
+            cv2.circle(display, (x, y), 4, (0, 255, 255), -1)
+            cv2.imshow(window_name, display)
+
+    cv2.imshow(window_name, display)
+    cv2.setMouseCallback(window_name, _on_click)
+
+    print("=" * 50)
+    print("开始框选LED。每颗LED：先点左上角，再点右下角。")
+    print("框完一颗后，回到终端输入这颗LED的名字（比如 power_led）。")
+    print("还没开始点下一颗时，在弹窗里按 q 可结束标定。")
+    print("=" * 50)
+
+    while True:
+        key = cv2.waitKey(20) & 0xFF
+        if key == ord('q') and len(current_points) == 0:
+            break
+
+        if len(current_points) == 2:
+            (x1, y1), (x2, y2) = current_points
+            x, y = min(x1, x2), min(y1, y2)
+            w, h = abs(x2 - x1), abs(y2 - y1)
+
+            if w == 0 or h == 0:
+                print("这一颗框的宽或高是0，忽略，请重新框这一颗")
+                current_points = []
+                continue
+
+            name = input(f"这一颗LED的名字(component_name) [x={x},y={y},w={w},h={h}]: ").strip()
+            if not name:
+                print("名字不能为空，这一颗作废，请重新框")
+                current_points = []
+                continue
+
+            positions.append({
+                "component_name": name,
+                "rel_x": (x - px) / pw,
+                "rel_y": (y - py) / ph,
+                "rel_w": w / pw,
+                "rel_h": h / ph,
+            })
+            cv2.rectangle(display, (x, y), (x + w, y + h), (0, 0, 255), 2)
+            cv2.putText(display, name, (x, y - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            cv2.imshow(window_name, display)
+            print(f"已记录: {name}，当前共 {len(positions)} 颗。继续框下一颗，或按q结束")
+            current_points = []
+
+    cv2.destroyWindow(window_name)
+    return positions
+
+
+def run_calibration_mode():
+    """
+    标定入口。用法:
+        python3 monitor_with_rules.py --calibrate --station <station_id> \
+            --vendor <厂商> --model "<型号>"
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--calibrate", action="store_true")
+    parser.add_argument("--station", type=str, required=True, help="station_id，比如 rack_03_slot_12")
+    parser.add_argument("--vendor", type=str, required=True)
+    parser.add_argument("--model", type=str, required=True)
+    args = parser.parse_args()
+
+    station_id = args.station
+    vendor = args.vendor
+    model = args.model
+
+    print(f"标定 station={station_id}  vendor={vendor}  model={model}")
+
+    cap = cv2.VideoCapture(CAMERA_SOURCE)
+    if not cap.isOpened():
+        print("摄像头打不开，先解决这个再标定")
+        return
+    ret, frame = cap.read()
+    cap.release()
+    if not ret:
+        print("读取帧失败")
+        return
+
+    print(f"抓到一帧，画面尺寸: {frame.shape[1]}x{frame.shape[0]}")
+
+    # ---- 第一步：标定面板整体框 ----
+    print("请在弹出的窗口里，先点面板左上角，再点右下角（按q取消）")
+    panel_bbox_tuple = _interactive_click_two_points(frame, "点击面板左上角 -> 右下角 (q取消)")
+    if panel_bbox_tuple is None:
+        print("取消了，退出")
+        return
+    px, py, pw, ph = panel_bbox_tuple
+    panel_bbox = {"x": px, "y": py, "w": pw, "h": ph}
+    print(f"面板框标定完成: {panel_bbox}")
+
+    # ---- 第二步：这个型号如果已经标定过LED位置，问是否复用 ----
+    knowledge_base = LedKnowledgeBase(knowledge_dir=KNOWLEDGE_DIR)
+    existing_positions = knowledge_base.get_led_positions(vendor, model)
+
+    if existing_positions:
+        print(f"{vendor} {model} 已经标定过 {len(existing_positions)} 颗LED的位置。")
+        redo = input("要重新标定吗？(y=重新标定 / 直接回车=复用已有位置): ").strip().lower()
+        led_positions = _interactive_calibrate_leds(frame, panel_bbox) if redo == "y" else existing_positions
+    else:
+        print(f"{vendor} {model} 还没有标定过LED位置，开始标定每一颗LED")
+        led_positions = _interactive_calibrate_leds(frame, panel_bbox)
+
+    if not led_positions:
+        print("没有任何LED位置数据，标定终止")
+        return
+
+    # ---- 第三步：保存 ----
+    knowledge_base.save_led_positions(vendor, model, led_positions)
+    print(f"已把 {len(led_positions)} 颗LED的位置写入 knowledge/{knowledge_base._slug(vendor, model)}.json")
+
+    set_station_panel_bbox(station_id, vendor, model, panel_bbox)
+    print(f"已把station={station_id}的面板锚点框写入 config/runtime_config.json")
+
+    config = load_runtime_config()
+    if config and len(config.get("stations", {})) == 1:
+        set_current_station(station_id)
+        print(f"当前只有这一个station，已自动设为current_station")
+
+    # ---- 第四步：画出来确认 ----
+    absolute_rois = resolve_absolute_led_rois(panel_bbox, led_positions)
+    display = frame.copy()
+    cv2.rectangle(display, (px, py), (px + pw, py + ph), (255, 0, 0), 2)
+    for name, x, y, w, h in absolute_rois:
+        cv2.rectangle(display, (x, y), (x + w, y + h), (0, 0, 255), 2)
+        cv2.putText(display, name, (x, y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+    cv2.imshow("标定结果确认（按任意键关闭）", display)
+    print("按任意键关闭窗口，标定完成")
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+
+# ============ 正常巡检模式 ============
 
 def main():
     ensure_dirs()
@@ -435,23 +608,44 @@ def main():
     default_model = runtime_config["default"]["model"]
 
     station_vendor_model = {}
-
     for station, vm in runtime_config["stations"].items():
-        station_vendor_model[station] = (
-            vm["vendor"],
-            vm["model"]
-        )
+        station_vendor_model[station] = (vm["vendor"], vm["model"])
 
+    knowledge_base = LedKnowledgeBase(knowledge_dir=KNOWLEDGE_DIR)
+    alert_colors = resolve_alert_colors(knowledge_base, default_vendor, default_model, station_vendor_model)
 
-    knowledge_base = LedKnowledgeBase(
-        knowledge_dir=KNOWLEDGE_DIR
-    )
+    # ---- 确定当前station，尝试加载标定好的LED绝对坐标 ----
+    current_station_id = get_current_station(runtime_config)
+    absolute_led_rois = None
+    current_vendor, current_model = default_vendor, default_model
 
-    alert_colors = resolve_alert_colors(
-        knowledge_base,
-        default_vendor,
-        default_model
-    )
+    if current_station_id is None:
+        logger.warning(
+            "无法确定当前station（config里没有current_station，也没有唯一一个"
+            "已标定panel_bbox的station）。将退化使用旧的SCAN_ROI整片区域检测方式，"
+            "建议先跑: python3 monitor_with_rules.py --calibrate --station <id> "
+            "--vendor <vendor> --model \"<model>\" 完成标定")
+    else:
+        station_entry = runtime_config["stations"].get(current_station_id, {})
+        panel_bbox = station_entry.get("panel_bbox")
+        current_vendor = station_entry.get("vendor", default_vendor)
+        current_model = station_entry.get("model", default_model)
+
+        if not panel_bbox:
+            logger.warning(
+                f"station={current_station_id} 还没有标定panel_bbox，"
+                f"将退化使用旧的SCAN_ROI整片区域检测方式，建议先标定")
+        else:
+            led_positions = knowledge_base.get_led_positions(current_vendor, current_model)
+            if not led_positions:
+                logger.warning(
+                    f"{current_vendor} {current_model} 还没有标定led_positions，"
+                    f"将退化使用旧的SCAN_ROI整片区域检测方式，建议先标定")
+            else:
+                absolute_led_rois = resolve_absolute_led_rois(panel_bbox, led_positions)
+                logger.debug(
+                    f"station={current_station_id} 已加载{len(absolute_led_rois)}颗LED的标定坐标，"
+                    f"使用精确定点检测模式")
 
     cap = cv2.VideoCapture(CAMERA_SOURCE)
     if not cap.isOpened():
@@ -468,15 +662,12 @@ def main():
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640
     frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480
 
-    # 用一个环形缓冲存最近几秒的帧，报警触发时把"触发前"的画面也一起写进视频
     buffer_maxlen = int(PRE_TRIGGER_BUFFER_SECONDS * VIDEO_FPS)
     frame_buffer = deque(maxlen=buffer_maxlen)
 
-    # 每一帧"出现了哪些颜色"的历史，滚动保留最近 BLINK_WINDOW_SECONDS 秒，
-    # 用来判断某个颜色是常亮还是闪烁(见 estimate_color_pattern)
     color_presence_history = deque()
 
-    state = "PATROLLING"   # PATROLLING(正常巡检) / ALERTING(已停止,正在录像)
+    state = "PATROLLING"
     consecutive_alert_frames = 0
     consecutive_alert_color = None
     alert_start_time = None
@@ -486,7 +677,7 @@ def main():
     last_observation_log_time = 0.0
     video_path = None
 
-    cleanup_old_videos()   # 启动时先清理一次
+    cleanup_old_videos()
     last_cleanup_check_time = time.time()
 
     logger.debug("巡检监控已启动，全自动运行中...")
@@ -505,7 +696,12 @@ def main():
                 last_cleanup_check_time = now_for_cleanup
 
             frame_buffer.append(frame.copy())
-            candidates = detect_led_candidates(frame)
+
+            if absolute_led_rois is not None:
+                candidates = detect_led_candidates_by_positions(frame, absolute_led_rois)
+            else:
+                candidates = detect_led_candidates(frame)
+
             colors_found = {c[4] for c in candidates}
 
             now_for_history = time.time()
@@ -516,25 +712,18 @@ def main():
 
             if SHOW_WINDOW:
                 display = frame.copy()
-                for (x, y, w, h, color_label, area, median_hue, median_sat) in candidates:
-                    # 只画异常灯
+                for (x, y, w, h, color_label, area, median_hue, median_sat, component_name) in candidates:
                     if color_label != "amber":
                         continue
 
                     cv2.rectangle(display, (x, y), (x + w, y + h), (0, 0, 255), 2)
-
                     label = f"{color_label} H={median_hue} S={median_sat}"
+                    if component_name:
+                        label += f" [{component_name}]"
 
-                    cv2.putText(
-                        display,
-                        label,
-                        (x, y - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.55,
-                        (0, 0, 255),
-                        2,
-                    )
-                    
+                    cv2.putText(display, label, (x, y - 6),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
+
                 cv2.putText(display, f"state={state}", (10, frame_h - 12),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1)
                 if DEBUG_SHOW_AREA:
@@ -550,15 +739,14 @@ def main():
                         if event == cv2.EVENT_LBUTTONDOWN:
                             hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
                             if 0 <= my < hsv_frame.shape[0] and 0 <= mx < hsv_frame.shape[1]:
-                                ph, ps, pv = hsv_frame[my, mx]
-                                print(f"点击坐标=({mx},{my})  H={ph} S={ps} V={pv}")
+                                ph_, ps_, pv_ = hsv_frame[my, mx]
+                                print(f"点击坐标=({mx},{my})  H={ph_} S={ps_} V={pv_}")
                     cv2.setMouseCallback("patrol_monitor (debug)", _on_mouse_click)
 
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
 
             if DEBUG_SHOW_AREA:
-                # 标定模式下不触发报警逻辑，只用来读数值
                 continue
 
             if state == "PATROLLING":
@@ -574,57 +762,41 @@ def main():
                     consecutive_alert_frames = 0
                     consecutive_alert_color = None
 
-                # ---- 非报警颜色的轻量级观察记录 ----
-                # 不录像，只写一行日志。不记录绿色——绿色是最常见的正常状态，
-                # 记下来意义不大，只会让observation日志被刷屏。颜色和闪烁状态都
-                # 跟上次一样、且没超过节流间隔的话也不重复写。蓝色这类"正常但
-                # 特殊"的状态意外出现时，留个痕迹方便回查。
                 non_alert_colors = colors_found - alert_colors - OK_COLORS
                 if non_alert_colors:
                     observed_color = sorted(non_alert_colors)[0]
                     observed_pattern = estimate_color_pattern(color_presence_history, observed_color)
                     now_ts = time.time()
-                    # 只看颜色变没变，不看闪烁状态(pattern)变没变——pattern是靠
-                    # 滑动窗口估算出来的，样本不够时会有"unknown -> blink"这种
-                    # 短暂波动，如果拿pattern变化也当"状态变了"去触发重新记录，
-                    # 同一次闪烁会被记好几条几乎一样的。颜色不变就只算一次。
                     color_changed = observed_color != last_observed_color
                     interval_passed = (now_ts - last_observation_log_time) >= OBSERVATION_LOG_MIN_INTERVAL
-                    # 颜色刚变化、但闪烁状态还没攒够样本判断出来时，先不急着记这一条——
-                    # 等下一次循环判断出常亮/闪烁之后再记，这样(通常是)唯一的一条记录
-                    # 信息量更完整。真遇到一直判断不出来的情况，靠30秒兜底(interval_passed)
-                    # 还是会记一条，不会永远不记。
                     still_gathering = color_changed and observed_pattern == "unknown"
                     if (color_changed or interval_passed) and not still_gathering:
-                        vendor, model = station_vendor_model.get(
-                            "unknown", (default_vendor, default_model))
                         obs_pattern_for_lookup = observed_pattern if observed_pattern != "unknown" else None
                         obs_explanation = knowledge_base.describe(
-                            vendor, model, color=observed_color, pattern=obs_pattern_for_lookup)
+                            current_vendor, current_model, color=observed_color, pattern=obs_pattern_for_lookup)
                         write_observation_log(observed_color, obs_explanation)
                         last_observed_color = observed_color
                         last_observed_pattern = observed_pattern
                         last_observation_log_time = now_ts
 
                 if consecutive_alert_frames >= CONSECUTIVE_FRAMES_TO_CONFIRM:
-                    # ---- 触发报警 ----
-                    # 注意：触发条件仍然只看颜色(红/黄)，不看闪不闪——这里只是把
-                    # 闪烁状态一起估算出来，放进说明书查表和日志里，让报警记录
-                    # 更精确，但不改变"什么时候触发"这件事本身。
-                    # 目前还没有"巡检条现在停在哪个station"的外部状态输入，
-                    # 所以这里统一用 DEFAULT_VENDOR/MODEL 查表；等巡检条那边能
-                    # 告诉脚本当前station_id后，可以按 STATION_VENDOR_MODEL 查出
-                    # 对应厂商型号，实现"不同server用不同说明书解释"
-                    vendor, model = station_vendor_model.get(
-                        "unknown", (default_vendor, default_model))
                     alert_pattern = estimate_color_pattern(color_presence_history, consecutive_alert_color)
                     alert_pattern_for_lookup = alert_pattern if alert_pattern != "unknown" else None
                     explanation = knowledge_base.describe(
-                        vendor, model, color=consecutive_alert_color, pattern=alert_pattern_for_lookup)
+                        current_vendor, current_model, color=consecutive_alert_color,
+                        pattern=alert_pattern_for_lookup)
+
+                    # 【新增】标定模式下能精确列出是哪几颗LED触发的这次报警
+                    alert_components = sorted({
+                        c[8] for c in candidates
+                        if c[4] == consecutive_alert_color and c[8]
+                    })
+
                     logger.warning(
-                        f"检测到异常颜色: {consecutive_alert_color}({alert_pattern})，触发停止+录像\n"
-                        f"说明书查表结果: {explanation}")
-                    send_stop_command(consecutive_alert_color)
+                        f"检测到异常颜色: {consecutive_alert_color}({alert_pattern})"
+                        f"{' 触发LED=' + str(alert_components) if alert_components else ''}，"
+                        f"触发停止+录像\n说明书查表结果: {explanation}")
+                    send_stop_command(consecutive_alert_color, station_id=current_station_id or "unknown")
 
                     ts = datetime.now()
                     video_path = ALERT_VIDEO_DIR / f"alert_{ts:%Y%m%d_%H%M%S}.mp4"
@@ -632,18 +804,9 @@ def main():
                     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
                     video_writer = cv2.VideoWriter(
                         str(video_path), fourcc, VIDEO_FPS, (frame_w, frame_h))
-                    # 把缓冲区里"触发前"的画面先写进去(固定帧数，回放时长固定为
-                    # PRE_TRIGGER_BUFFER_SECONDS，不受当时循环速度影响)
                     for buffered_frame in frame_buffer:
                         video_writer.write(buffered_frame)
 
-                    # ---- 关键修复：录像结束条件用"目标帧数"而不是"墙钟时间" ----
-                    # 之前是数墙钟时间是否过了N秒，但每秒实际能处理/写入多少帧
-                    # 会因为系统负载波动，导致同样等N秒，写入的帧数不一样，
-                    # 回放出来的视频时长就忽长忽短。
-                    # 现在改成：无论实际循环跑多快/多慢，都写够固定帧数，
-                    # 不够就在当前帧到位时"追帧"补齐，保证每次视频文件严格
-                    # 等于 RECORD_SECONDS_AFTER_TRIGGER 这个时长。
                     post_trigger_target_frames = int(round(RECORD_SECONDS_AFTER_TRIGGER * VIDEO_FPS))
                     post_trigger_frames_written = 0
                     next_frame_deadline = time.time()
@@ -654,14 +817,12 @@ def main():
                     consecutive_alert_color_saved = consecutive_alert_color
                     alert_pattern_saved = alert_pattern
                     alert_explanation_saved = explanation
+                    alert_components_saved = alert_components
                     consecutive_alert_color = None
 
             elif state == "ALERTING":
                 if video_writer is not None:
                     now = time.time()
-                    # 追帧写入：把从上次写入到现在这段时间里"应该有的帧数"都补上
-                    # (循环慢了就多补几帧，循环快了这次就可能一帧都不写，
-                    # 保证不管实际循环速度如何，最终写入的总帧数是固定的)
                     while (next_frame_deadline <= now
                            and post_trigger_frames_written < post_trigger_target_frames):
                         video_writer.write(frame)
@@ -672,8 +833,9 @@ def main():
                     if video_writer is not None:
                         video_writer.release()
                         video_writer = None
-                    write_alert_log(consecutive_alert_color_saved, alert_pattern_saved, video_path, alert_explanation_saved)
-                    send_resume_command()
+                    write_alert_log(consecutive_alert_color_saved, alert_pattern_saved, video_path,
+                                     alert_explanation_saved, alert_components_saved)
+                    send_resume_command(station_id=current_station_id or "unknown")
                     state = "PATROLLING"
 
     except KeyboardInterrupt:
@@ -687,4 +849,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--calibrate" in sys.argv:
+        run_calibration_mode()
+    else:
+        main()

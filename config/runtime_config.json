@@ -3,5 +3,17 @@
     "vendor": "NVIDIA",
     "model": "DGX A100"
   },
-  "stations": {}
+  "stations": {
+    "server_01": {
+      "vendor": "NVIDIA",
+      "model": "测试server",
+      "panel_bbox": {
+        "x": 2474,
+        "y": 752,
+        "w": 16,
+        "h": 35
+      }
+    }
+  },
+  "current_station": "server_01"
 }

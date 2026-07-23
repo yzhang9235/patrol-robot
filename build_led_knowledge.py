@@ -278,6 +278,24 @@ def main():
     }
 
     json_path = out_dir / f"{slug}.json"
+    # 【新增】如果这个型号之前已经用--calibrate标定过LED位置，
+    # 重新解析说明书时要保留这份数据，不能被这次整份覆盖掉
+    existing_led_positions = []
+    if json_path.exists():
+        with open(json_path, "r", encoding="utf-8") as f:
+            existing_data = json.load(f)
+        existing_led_positions = existing_data.get("led_positions", [])
+
+    knowledge = {
+        "vendor": args.vendor,
+        "model": args.model,
+        "source_file": input_path.name,
+        "extracted_at": datetime.now().isoformat(),
+        "rule_count": len(rules),
+        "rules": rules,
+        "led_positions": existing_led_positions,
+    }
+
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(knowledge, f, ensure_ascii=False, indent=2)
 
