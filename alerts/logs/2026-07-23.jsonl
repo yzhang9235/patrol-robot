@@ -1,4 +1,0 @@
-{"timestamp": "2026-07-23T13:38:27.382697", "color": "amber", "pattern": "unknown", "video_file": "alerts/videos/alert_20260723_133820.mp4", "explanation": "检测到amber色异常，但NVIDIA 测试server暂无对应的说明书规则记录，需要人工判断", "components": ["alert_ledalert_led"]}
-{"timestamp": "2026-07-23T13:38:34.799030", "color": "amber", "pattern": "solid", "video_file": "alerts/videos/alert_20260723_133827.mp4", "explanation": "检测到amber色异常，但NVIDIA 测试server暂无对应的说明书规则记录，需要人工判断", "components": ["alert_ledalert_led"]}
-{"timestamp": "2026-07-23T13:44:07.453094", "color": "amber", "pattern": "unknown", "video_file": "alerts/videos/alert_20260723_134400.mp4", "explanation": "检测到amber色异常，但NVIDIA 测试server暂无对应的说明书规则记录，需要人工判断", "components": ["alert_ledalert_led"]}
-{"timestamp": "2026-07-23T13:44:14.812303", "color": "amber", "pattern": "solid", "video_file": "alerts/videos/alert_20260723_134407.mp4", "explanation": "检测到amber色异常，但NVIDIA 测试server暂无对应的说明书规则记录，需要人工判断", "components": ["alert_ledalert_led"]}

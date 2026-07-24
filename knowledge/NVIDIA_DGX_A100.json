@@ -65,5 +65,14 @@
       "source": "dgxa100-user-guide.pdf",
       "confidence": "high"
     }
+  ],
+  "led_positions": [
+    {
+      "component_name": "lit",
+      "rel_x": 0.979659609796596,
+      "rel_y": 0.36548223350253806,
+      "rel_w": 0.014943960149439602,
+      "rel_h": 0.08967851099830795
+    }
   ]
 }

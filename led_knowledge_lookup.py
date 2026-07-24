@@ -5,16 +5,21 @@ led_knowledge_lookup.py
 里查出说明书原文描述。这里不包含任何"红色=严重故障"这类硬编码语义——
 所有解释都来自 build_led_knowledge.py 从说明书里提取出的原文。
 
-【新增】同一个knowledge文件里现在还存了这个型号每颗LED的相对位置模板
-(led_positions字段)，是巡检脚本用--calibrate标定模式写入的，跟rules
-是同一份文件、不同字段，不需要额外的position文件。
+【颜色别名说明】不同厂商说明书里，同一种琥珀/黄色指示灯，用词并不统一——
+有的写"amber"，有的写"yellow"，有的写"orange"。build_led_knowledge.py
+提取规则时会把这些词都归到"yellow"这个颜色桶里存进knowledge文件；
+而monitor_with_rules.py摄像头检测端固定用"amber"这个标签。
+如果查表时严格按字符串相等比较，会导致检测到"amber"却永远查不到
+存的是"yellow"的规则。所以这里查表前先把颜色做一次归一化，
+把amber/yellow/orange都当成同一个颜色处理，不管说明书用哪个词、
+不管检测端标签叫什么，都能对上。
 
 用法(在 monitor_with_rules.py 或其他脚本里)：
     from led_knowledge_lookup import LedKnowledgeBase
 
     kb = LedKnowledgeBase(knowledge_dir="knowledge")
     kb.load("NVIDIA", "DGX A100")          # 加载某个厂商型号的规则文件
-    matches = kb.lookup("NVIDIA", "DGX A100", color="red", pattern="solid")
+    matches = kb.lookup("NVIDIA", "DGX A100", color="amber", pattern="solid")
     for m in matches:
         print(m["component"], m["description"])
 
@@ -29,6 +34,25 @@ import json
 import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+
+# amber/yellow/orange 视为同一个颜色，统一归一化成"amber"再比较。
+# 以后如果又冒出别的说法(比如"琥珀"被误识别成别的英文词)，
+# 在这个字典里加一行映射就行，不用改lookup()里的逻辑
+COLOR_ALIASES = {
+    "amber": "amber",
+    "yellow": "amber",
+    "orange": "amber",
+}
+
+
+def normalize_color(color: Optional[str]) -> Optional[str]:
+    """把颜色名归一化，amber/yellow/orange统一算作amber，其他颜色原样返回。
+    大小写不敏感(说明书原文提取出来的、或者调用方传入的，大小写不一定统一)。
+    """
+    if color is None:
+        return None
+    return COLOR_ALIASES.get(color.strip().lower(), color.strip().lower())
 
 
 class LedKnowledgeBase:
@@ -56,6 +80,8 @@ class LedKnowledgeBase:
                pattern: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         查找匹配的规则。
+        - 颜色比较前先归一化(amber/yellow/orange视为同一个)，不管说明书
+          原文用哪个词、调用方传的是哪个词，只要指的是同一种颜色都能匹配上
         - 如果传了pattern(solid/blink)，优先精确匹配 color+pattern
         - 如果精确匹配没有结果，退化成只按color匹配，返回所有该颜色的规则
           (调用方可以看到"这个颜色在说明书里对应哪几种可能"，而不是被静默地
@@ -69,8 +95,9 @@ class LedKnowledgeBase:
                 return []
             data = self._cache[slug]
 
+        target_color = normalize_color(color)
         rules = data.get("rules", [])
-        color_matches = [r for r in rules if r.get("color") == color]
+        color_matches = [r for r in rules if normalize_color(r.get("color")) == target_color]
 
         if pattern:
             exact = [r for r in color_matches if r.get("pattern") == pattern]
@@ -95,7 +122,7 @@ class LedKnowledgeBase:
             lines.append(f"  - [{m['component']}/{m['pattern']}] {m['description']}")
         return "\n".join(lines)
 
-    # ============ 新增：LED相对位置模板的读写 ============
+    # ============ LED相对位置模板的读写 ============
 
     def get_led_positions(self, vendor: str, model: str) -> List[Dict[str, Any]]:
         """
@@ -103,7 +130,7 @@ class LedKnowledgeBase:
         格式: [{"component_name":str, "rel_x":float, "rel_y":float,
                 "rel_w":float, "rel_h":float}, ...]
         (rel_*是相对面板panel_bbox的比例坐标，0~1)
-        没标定过就返回空列表，调用方要判断是否需要提示先用--calibrate标定。
+        没标定过就返回空列表，调用方要判断是否需要提示先标定。
         """
         slug = self._slug(vendor, model)
         if slug not in self._cache:
@@ -120,12 +147,6 @@ class LedKnowledgeBase:
         这是对led_positions字段的整份覆盖(重新标定会覆盖旧的位置数据)，
         但不会动这个文件里已有的rules字段——先读出原文件内容，只替换
         led_positions这一个字段再写回去。
-
-        如果这个型号还没有knowledge文件(还没跑过build_led_knowledge.py
-        解析说明书)，会先建一个rules为空的骨架文件，等以后有说明书了
-        再补充规则也不会覆盖掉这里存的led_positions
-        (build_led_knowledge.py重新生成时也是先读出已有文件、
-        保留led_positions字段，不是整份覆盖，两边行为一致)。
         """
         slug = self._slug(vendor, model)
         path = self.knowledge_dir / f"{slug}.json"

@@ -5,13 +5,13 @@
   },
   "stations": {
     "server_01": {
-      "vendor": "NVIDIA",
-      "model": "测试server",
+      "vendor": "Lenovo",
+      "model": "x3650_m5",
       "panel_bbox": {
-        "x": 2474,
-        "y": 752,
-        "w": 16,
-        "h": 35
+        "x": 110,
+        "y": 527,
+        "w": 2400,
+        "h": 593
       }
     }
   },

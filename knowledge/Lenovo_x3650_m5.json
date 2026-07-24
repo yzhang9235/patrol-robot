@@ -1,0 +1,95 @@
+{
+  "vendor": "Lenovo",
+  "model": "x3650_m5",
+  "source_file": "x3650_led.png",
+  "extracted_at": "2026-07-24T10:42:20.548402",
+  "rule_count": 7,
+  "rules": [
+    {
+      "id": "r1",
+      "component": "Figure",
+      "color": "off",
+      "pattern": "unknown",
+      "description": "¢ Power-control button and power-on LED: Press this button to turn the server on and off manually. The",
+      "page": 1,
+      "source": "x3650_led.png",
+      "confidence": "low",
+      "ocr": true
+    },
+    {
+      "id": "r2",
+      "component": "states of the power-on LED are as follows",
+      "color": "off",
+      "pattern": "unknown",
+      "description": "Off: Power is not present or the power supply, or the LED itself has failed.",
+      "page": 1,
+      "source": "x3650_led.png",
+      "confidence": "low",
+      "ocr": true
+    },
+    {
+      "id": "r3",
+      "component": "states of the power-on LED are as follows",
+      "color": "off",
+      "pattern": "blink",
+      "description": "Flashing rapidly (4 times per second): The server is turned off and is not ready to be turned on. The",
+      "page": 1,
+      "source": "x3650_led.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r4",
+      "component": "states of the power-on LED are as follows",
+      "color": "off",
+      "pattern": "blink",
+      "description": "Flashing slowly (once per second): The server is turned off and is ready to be turned on. You can",
+      "page": 1,
+      "source": "x3650_led.png",
+      "confidence": "high",
+      "ocr": true
+    },
+    {
+      "id": "r5",
+      "component": "Lit",
+      "color": "blue",
+      "pattern": "unknown",
+      "description": "。 System-locator button/LED: Use this blue LED to visually locate the server among other servers. A",
+      "page": 1,
+      "source": "x3650_led.png",
+      "confidence": "low",
+      "ocr": true
+    },
+    {
+      "id": "r6",
+      "component": "Lit",
+      "color": "yellow",
+      "pattern": "unknown",
+      "description": "¢ Check log LED: When this yellow LED is lit, it indicates that a system error has occurred. Check the event",
+      "page": 1,
+      "source": "x3650_led.png",
+      "confidence": "low",
+      "ocr": true
+    },
+    {
+      "id": "r7",
+      "component": "Lit",
+      "color": "yellow",
+      "pattern": "unknown",
+      "description": "。 System-error LED: When this yellow LED is lit, it indicates that a system error has occurred. A system-",
+      "page": 1,
+      "source": "x3650_led.png",
+      "confidence": "low",
+      "ocr": true
+    }
+  ],
+  "led_positions": [
+    {
+      "component_name": "led_1",
+      "rel_x": 0.9845833333333334,
+      "rel_y": 0.3642495784148398,
+      "rel_w": 0.01375,
+      "rel_h": 0.0893760539629005
+    }
+  ]
+}

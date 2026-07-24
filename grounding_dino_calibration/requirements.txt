@@ -1,0 +1,6 @@
+torch
+torchvision
+opencv-python
+numpy
+Pillow
+# Grounding DINO本体不在pypi正式发布，需要从github源码装，见README.md

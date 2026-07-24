@@ -1,0 +1,7 @@
+[low][第1页][Figure][off/unknown][OCR] ¢ Power-control button and power-on LED: Press this button to turn the server on and off manually. The
+[low][第1页][states of the power-on LED are as follows][off/unknown][OCR] Off: Power is not present or the power supply, or the LED itself has failed.
+[high][第1页][states of the power-on LED are as follows][off/blink][OCR] Flashing rapidly (4 times per second): The server is turned off and is not ready to be turned on. The
+[high][第1页][states of the power-on LED are as follows][off/blink][OCR] Flashing slowly (once per second): The server is turned off and is ready to be turned on. You can
+[low][第1页][Lit][blue/unknown][OCR] 。 System-locator button/LED: Use this blue LED to visually locate the server among other servers. A
+[low][第1页][Lit][yellow/unknown][OCR] ¢ Check log LED: When this yellow LED is lit, it indicates that a system error has occurred. Check the event
+[low][第1页][Lit][yellow/unknown][OCR] 。 System-error LED: When this yellow LED is lit, it indicates that a system error has occurred. A system-
